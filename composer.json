@@ -1,0 +1,12 @@
+{
+    "name": "passgate/pro",
+    "description": "PassGate Pro event ticketing system",
+    "type": "project",
+    "require": {
+        "php": ">=8.1",
+        "phpmailer/phpmailer": "^7.1"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

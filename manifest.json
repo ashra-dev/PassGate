@@ -1,0 +1,18 @@
+{
+  "name": "PassGate Pro Terminal",
+  "short_name": "PassGate",
+  "description": "Event pass gate scanner with PostgreSQL backend.",
+  "start_url": "index.php",
+  "display": "standalone",
+  "background_color": "#4f46e5",
+  "theme_color": "#4f46e5",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/1037/1037237.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
