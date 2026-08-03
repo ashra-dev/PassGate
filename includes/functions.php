@@ -1064,7 +1064,36 @@ function ensureCustomerSchema(PDO $db): void
             ticket_id    VARCHAR(100) NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
             purchased_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             payment_id   VARCHAR(255) DEFAULT \'\',
+            payment_gateway VARCHAR(50) DEFAULT \'\',
+            payment_reference VARCHAR(255) DEFAULT \'\',
             UNIQUE (ticket_id)
+        )'
+    );
+
+    $ctColCheck = $db->prepare(
+        "SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'customer_tickets'
+           AND column_name IN ('payment_gateway', 'payment_reference')"
+    );
+    $ctColCheck->execute();
+    $ctCols = $ctColCheck->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('payment_gateway', $ctCols, true)) {
+        $db->exec('ALTER TABLE customer_tickets ADD COLUMN payment_gateway VARCHAR(50) DEFAULT \'\'');
+    }
+    if (!in_array('payment_reference', $ctCols, true)) {
+        $db->exec('ALTER TABLE customer_tickets ADD COLUMN payment_reference VARCHAR(255) DEFAULT \'\'');
+    }
+
+    $db->exec(
+        'CREATE TABLE IF NOT EXISTS payment_pending (
+            id               SERIAL PRIMARY KEY,
+            transaction_uuid VARCHAR(100) NOT NULL UNIQUE,
+            event_id         INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+            tier_id          INTEGER NOT NULL REFERENCES tiers(id) ON DELETE CASCADE,
+            email            VARCHAR(255) NOT NULL,
+            gateway          VARCHAR(20) NOT NULL DEFAULT \'esewa\',
+            amount           DECIMAL(10, 2) NOT NULL,
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )'
     );
 
@@ -1072,6 +1101,7 @@ function ensureCustomerSchema(PDO $db): void
     $db->exec('CREATE INDEX IF NOT EXISTS idx_customers_email ON customers (email)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_customer_tickets_customer ON customer_tickets (customer_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_customer_tickets_ticket ON customer_tickets (ticket_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_payment_pending_uuid ON payment_pending (transaction_uuid)');
 }
 
 function isCustomerAuthenticated(): bool
@@ -1274,35 +1304,47 @@ function getOrCreateCustomerForPurchase(PDO $db, string $email, string $name = '
 }
 
 /**
- * Assign a vault-pool ticket to a customer after successful payment.
+ * Unified ticket assignment after successful online payment (Stripe or eSewa).
  *
- * @return array{success: bool, ticket_id: ?string, message: string}
+ * @return array{success: bool, ticket_id: ?string, message: string, email: string, event_name?: string, tier_name?: string}
  */
-function fulfillOnlineTicketPurchase(
+function assignTicket(
     PDO $db,
     int $eventId,
     int $tierId,
     string $customerEmail,
-    string $paymentId
+    string $gateway,
+    string $paymentId,
+    ?string $paymentReference = null
 ): array {
     ensureCustomerSchema($db);
 
-    // Idempotent – webhook and success page may both call this
+    $gateway = strtolower(trim($gateway));
+    $paymentId = trim($paymentId);
+    $paymentReference = trim($paymentReference ?? $paymentId);
+    $customerEmail = strtolower(trim($customerEmail));
+
+    // Idempotent – webhook, success page, and callback may all call this
     $existingStmt = $db->prepare(
         'SELECT ct.ticket_id, c.email
          FROM customer_tickets ct
          JOIN customers c ON c.id = ct.customer_id
-         WHERE ct.payment_id = :payment_id'
+         WHERE ct.payment_id = :payment_id OR ct.payment_reference = :payment_reference'
     );
-    $existingStmt->execute(['payment_id' => $paymentId]);
+    $existingStmt->execute([
+        'payment_id'        => $paymentId,
+        'payment_reference' => $paymentReference,
+    ]);
     $existing = $existingStmt->fetch();
     if ($existing !== false) {
-        return [
+        $result = [
             'success'   => true,
             'ticket_id' => (string) $existing['ticket_id'],
             'message'   => 'Already fulfilled.',
             'email'     => (string) $existing['email'],
         ];
+
+        return enrichAssignTicketResult($db, $tierId, $result);
     }
 
     $db->beginTransaction();
@@ -1322,9 +1364,9 @@ function fulfillOnlineTicketPurchase(
 
         if ($ticketId === false) {
             $db->rollBack();
-            auditLog('SALE', "No tickets left for event {$eventId} tier {$tierId} (payment {$paymentId})");
+            auditLog('SALE', "No tickets left for event {$eventId} tier {$tierId} ({$gateway} {$paymentId})");
 
-            return ['success' => false, 'ticket_id' => null, 'message' => 'No tickets available.'];
+            return ['success' => false, 'ticket_id' => null, 'message' => 'No tickets available.', 'email' => $customerEmail];
         }
 
         $customerId = getOrCreateCustomerForPurchase($db, $customerEmail);
@@ -1340,20 +1382,30 @@ function fulfillOnlineTicketPurchase(
         $update->execute(['customer_id' => $customerId, 'ticket_id' => $ticketId]);
 
         $link = $db->prepare(
-            'INSERT INTO customer_tickets (customer_id, ticket_id, payment_id)
-             VALUES (:customer_id, :ticket_id, :payment_id)'
+            'INSERT INTO customer_tickets
+                (customer_id, ticket_id, payment_id, payment_gateway, payment_reference)
+             VALUES (:customer_id, :ticket_id, :payment_id, :payment_gateway, :payment_reference)'
         );
         $link->execute([
-            'customer_id' => $customerId,
-            'ticket_id'   => $ticketId,
-            'payment_id'  => $paymentId,
+            'customer_id'       => $customerId,
+            'ticket_id'         => $ticketId,
+            'payment_id'        => $paymentId,
+            'payment_gateway'   => $gateway,
+            'payment_reference' => $paymentReference,
         ]);
 
         $db->commit();
 
-        auditLog('SALE', "Ticket {$ticketId} sold online to {$customerEmail} (payment {$paymentId})");
+        auditLog('SALE', "Ticket {$ticketId} sold via {$gateway} to {$customerEmail} (ref {$paymentReference})");
 
-        return ['success' => true, 'ticket_id' => (string) $ticketId, 'message' => 'Ticket assigned.', 'email' => $customerEmail];
+        $result = [
+            'success'   => true,
+            'ticket_id' => (string) $ticketId,
+            'message'   => 'Ticket assigned.',
+            'email'     => $customerEmail,
+        ];
+
+        return enrichAssignTicketResult($db, $tierId, $result);
     } catch (Throwable $e) {
         if ($db->inTransaction()) {
             $db->rollBack();
@@ -1362,6 +1414,45 @@ function fulfillOnlineTicketPurchase(
 
         return ['success' => false, 'ticket_id' => null, 'message' => $e->getMessage(), 'email' => $customerEmail];
     }
+}
+
+/**
+ * @param array{success: bool, ticket_id: ?string, message: string, email: string} $result
+ * @return array{success: bool, ticket_id: ?string, message: string, email: string, event_name?: string, tier_name?: string}
+ */
+function enrichAssignTicketResult(PDO $db, int $tierId, array $result): array
+{
+    if (!$result['success']) {
+        return $result;
+    }
+
+    $tierStmt = $db->prepare(
+        'SELECT ti.name AS tier_name, e.name AS event_name FROM tiers ti JOIN events e ON e.id = ti.event_id
+         WHERE ti.id = :tier_id'
+    );
+    $tierStmt->execute(['tier_id' => $tierId]);
+    $meta = $tierStmt->fetch();
+    if ($meta) {
+        $result['event_name'] = (string) $meta['event_name'];
+        $result['tier_name'] = (string) $meta['tier_name'];
+    }
+
+    return $result;
+}
+
+/**
+ * @deprecated Use assignTicket() – kept for backward compatibility.
+ *
+ * @return array{success: bool, ticket_id: ?string, message: string, email?: string}
+ */
+function fulfillOnlineTicketPurchase(
+    PDO $db,
+    int $eventId,
+    int $tierId,
+    string $customerEmail,
+    string $paymentId
+): array {
+    return assignTicket($db, $eventId, $tierId, $customerEmail, 'stripe', $paymentId);
 }
 
 /**
@@ -1386,21 +1477,8 @@ function fulfillStripeCheckoutSession(PDO $db, object $session): array
         return ['success' => false, 'ticket_id' => null, 'message' => 'Missing checkout metadata.', 'email' => ''];
     }
 
-    $result = fulfillOnlineTicketPurchase($db, $eventId, $tierId, $email, (string) $session->id);
+    $result = assignTicket($db, $eventId, $tierId, $email, 'stripe', (string) $session->id);
     $result['email'] = $email;
-
-    if ($result['success']) {
-        $tierStmt = $db->prepare(
-            'SELECT ti.name AS tier_name, e.name AS event_name FROM tiers ti JOIN events e ON e.id = ti.event_id
-             WHERE ti.id = :tier_id'
-        );
-        $tierStmt->execute(['tier_id' => $tierId]);
-        $meta = $tierStmt->fetch();
-        if ($meta) {
-            $result['event_name'] = (string) $meta['event_name'];
-            $result['tier_name'] = (string) $meta['tier_name'];
-        }
-    }
 
     return $result;
 }
@@ -1414,7 +1492,8 @@ function getCustomerTicketsWithDetails(PDO $db, int $customerId): array
 
     $stmt = $db->prepare(
         'SELECT t.id, t.physical_number, t.purchased_at, t.status,
-                e.name AS event_name, ti.name AS tier_name, ct.payment_id
+                e.name AS event_name, ti.name AS tier_name,
+                ct.payment_id, ct.payment_gateway, ct.payment_reference
          FROM customer_tickets ct
          JOIN tickets t ON t.id = ct.ticket_id
          JOIN events e ON e.id = t.event_id
@@ -1513,4 +1592,231 @@ function sendTicketPurchaseEmail(string $email, string $ticketId, string $eventN
     }
 
     return $result['success'];
+}
+
+// ---------------------------------------------------------------------------
+// eSewa payment gateway
+// ---------------------------------------------------------------------------
+
+function isEsewaConfigured(): bool
+{
+    $code = trim(env('ESEWA_MERCHANT_CODE', '') ?? '');
+    $secret = trim(env('ESEWA_SECRET_KEY', '') ?? '');
+
+    return $code !== '' && $secret !== '' && !str_contains($code, 'your_');
+}
+
+function getEsewaFormUrl(): string
+{
+    $testMode = env('ESEWA_TEST_MODE', '1') === '1';
+    if (!$testMode) {
+        return rtrim(env('ESEWA_LIVE_URL', 'https://epay.esewa.com.np/api/epay/main/v2/form'), '/');
+    }
+
+    return rtrim(env('ESEWA_SANDBOX_URL', 'https://rc-epay.esewa.com.np/api/epay/main/v2/form'), '/');
+}
+
+function generateEsewaTransactionUuid(): string
+{
+    return 'PG-' . date('ymd') . '-' . bin2hex(random_bytes(6));
+}
+
+/**
+ * HMAC-SHA256 signature for eSewa ePay v2 form submission.
+ */
+function generateEsewaSignature(
+    string $totalAmount,
+    string $transactionUuid,
+    string $productCode,
+    string $secretKey
+): string {
+    $message = "total_amount={$totalAmount},transaction_uuid={$transactionUuid},product_code={$productCode}";
+
+    return base64_encode(hash_hmac('sha256', $message, $secretKey, true));
+}
+
+/**
+ * Verify signature on eSewa callback response payload.
+ */
+function verifyEsewaResponseSignature(array $payload, string $secretKey): bool
+{
+    $signedFieldNames = trim($payload['signed_field_names'] ?? '');
+    $receivedSignature = trim($payload['signature'] ?? '');
+
+    if ($signedFieldNames === '' || $receivedSignature === '') {
+        return false;
+    }
+
+    $parts = [];
+    foreach (explode(',', $signedFieldNames) as $field) {
+        $field = trim($field);
+        if ($field === '') {
+            continue;
+        }
+        $value = (string) ($payload[$field] ?? '');
+        $parts[] = "{$field}={$value}";
+    }
+
+    $message = implode(',', $parts);
+    $expected = base64_encode(hash_hmac('sha256', $message, $secretKey, true));
+
+    return hash_equals($expected, $receivedSignature);
+}
+
+/**
+ * Store pending checkout context keyed by transaction_uuid (eSewa callback lookup).
+ */
+function createPendingPurchase(
+    PDO $db,
+    string $transactionUuid,
+    int $eventId,
+    int $tierId,
+    string $email,
+    float $amount,
+    string $gateway = 'esewa'
+): void {
+    ensureCustomerSchema($db);
+
+    $stmt = $db->prepare(
+        'INSERT INTO payment_pending (transaction_uuid, event_id, tier_id, email, gateway, amount)
+         VALUES (:uuid, :event_id, :tier_id, :email, :gateway, :amount)'
+    );
+    $stmt->execute([
+        'uuid'     => $transactionUuid,
+        'event_id' => $eventId,
+        'tier_id'  => $tierId,
+        'email'    => strtolower(trim($email)),
+        'gateway'  => $gateway,
+        'amount'   => $amount,
+    ]);
+}
+
+/**
+ * @return array<string, mixed>|null
+ */
+function getPendingPurchase(PDO $db, string $transactionUuid): ?array
+{
+    ensureCustomerSchema($db);
+
+    $stmt = $db->prepare('SELECT * FROM payment_pending WHERE transaction_uuid = :uuid');
+    $stmt->execute(['uuid' => $transactionUuid]);
+    $row = $stmt->fetch();
+
+    return $row ?: null;
+}
+
+/**
+ * Build signed eSewa form fields for browser POST redirect.
+ *
+ * @return array<string, string>
+ */
+function buildEsewaPaymentForm(
+    int $eventId,
+    int $tierId,
+    string $email,
+    float $price,
+    string $eventName,
+    string $tierName
+): array {
+    $merchantCode = trim(env('ESEWA_MERCHANT_CODE', '') ?? '');
+    $secretKey = trim(env('ESEWA_SECRET_KEY', '') ?? '');
+    $appUrl = rtrim(env('APP_URL', 'http://localhost:8000'), '/');
+
+    $amountStr = number_format($price, 2, '.', '');
+    $transactionUuid = generateEsewaTransactionUuid();
+
+    $db = getDb();
+    createPendingPurchase($db, $transactionUuid, $eventId, $tierId, $email, $price, 'esewa');
+
+    $signature = generateEsewaSignature($amountStr, $transactionUuid, $merchantCode, $secretKey);
+
+    auditLog('ESEWA', "Payment initiated {$transactionUuid} for {$email} event {$eventId} tier {$tierId} ({$eventName} – {$tierName})");
+
+    return [
+        'esewa_url'               => getEsewaFormUrl(),
+        'amount'                  => $amountStr,
+        'tax_amount'              => '0',
+        'total_amount'            => $amountStr,
+        'transaction_uuid'        => $transactionUuid,
+        'product_code'            => $merchantCode,
+        'product_service_charge'  => '0',
+        'product_delivery_charge' => '0',
+        'success_url'             => $appUrl . '/esewa_callback.php',
+        'failure_url'             => $appUrl . '/buy.php?error=' . urlencode('eSewa payment cancelled or failed'),
+        'signed_field_names'      => 'total_amount,transaction_uuid,product_code',
+        'signature'               => $signature,
+    ];
+}
+
+/**
+ * Fulfill ticket after verified eSewa callback.
+ *
+ * @return array{success: bool, ticket_id: ?string, message: string, email: string, event_name?: string, tier_name?: string}
+ */
+function fulfillEsewaPayment(PDO $db, array $callbackData): array
+{
+    $transactionUuid = trim($callbackData['transaction_uuid'] ?? '');
+    $status = strtoupper(trim($callbackData['status'] ?? ''));
+    $transactionCode = trim($callbackData['transaction_code'] ?? '');
+
+    if ($transactionUuid === '') {
+        return ['success' => false, 'ticket_id' => null, 'message' => 'Missing transaction UUID.', 'email' => ''];
+    }
+
+    if ($status !== 'COMPLETE') {
+        auditLog('ESEWA', "Payment not complete for {$transactionUuid}: {$status}");
+
+        return ['success' => false, 'ticket_id' => null, 'message' => 'Payment not completed.', 'email' => ''];
+    }
+
+    $pending = getPendingPurchase($db, $transactionUuid);
+    if ($pending === null) {
+        auditLog('ESEWA', "No pending purchase for {$transactionUuid}");
+
+        return ['success' => false, 'ticket_id' => null, 'message' => 'Unknown transaction.', 'email' => ''];
+    }
+
+    return assignTicket(
+        $db,
+        (int) $pending['event_id'],
+        (int) $pending['tier_id'],
+        (string) $pending['email'],
+        'esewa',
+        $transactionUuid,
+        $transactionCode !== '' ? $transactionCode : $transactionUuid
+    );
+}
+
+/**
+ * Online sales breakdown by payment gateway for admin analytics.
+ *
+ * @return list<array{payment_gateway: string, sale_count: int, revenue: float}>
+ */
+function getOnlineSalesByGateway(PDO $db, int $eventId): array
+{
+    ensureCustomerSchema($db);
+
+    $stmt = $db->prepare(
+        "SELECT COALESCE(NULLIF(ct.payment_gateway, ''), 'unknown') AS payment_gateway,
+                COUNT(*) AS sale_count,
+                COALESCE(SUM(ti.price), 0) AS revenue
+         FROM customer_tickets ct
+         JOIN tickets t ON t.id = ct.ticket_id
+         JOIN tiers ti ON ti.id = t.tier_id
+         WHERE t.event_id = :event_id
+         GROUP BY COALESCE(NULLIF(ct.payment_gateway, ''), 'unknown')
+         ORDER BY payment_gateway"
+    );
+    $stmt->execute(['event_id' => $eventId]);
+
+    $rows = [];
+    foreach ($stmt->fetchAll() as $row) {
+        $rows[] = [
+            'payment_gateway' => (string) $row['payment_gateway'],
+            'sale_count'      => (int) $row['sale_count'],
+            'revenue'         => (float) $row['revenue'],
+        ];
+    }
+
+    return $rows;
 }

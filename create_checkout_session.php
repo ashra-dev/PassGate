@@ -88,7 +88,7 @@ try {
             ],
         ]],
         'success_url' => $appUrl . '/purchase_success.php?session_id={CHECKOUT_SESSION_ID}',
-        'cancel_url'  => $appUrl . '/buy.php?error=' . urlencode('Payment cancelled'),
+        'cancel_url'  => $appUrl . '/buy.php?cancel=1',
     ]);
 
     auditLog('STRIPE', "Checkout session {$session->id} for {$email} event {$eventId} tier {$tierId}");

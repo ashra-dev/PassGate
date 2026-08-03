@@ -54,12 +54,25 @@ CREATE TABLE IF NOT EXISTS tickets (
 );
 
 CREATE TABLE IF NOT EXISTS customer_tickets (
-    id           SERIAL       PRIMARY KEY,
-    customer_id  INTEGER      NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
-    ticket_id    VARCHAR(100) NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
-    purchased_at TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    payment_id   VARCHAR(255) DEFAULT '',
+    id                 SERIAL       PRIMARY KEY,
+    customer_id        INTEGER      NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    ticket_id          VARCHAR(100) NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+    purchased_at       TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    payment_id         VARCHAR(255) DEFAULT '',
+    payment_gateway    VARCHAR(50)  DEFAULT '',
+    payment_reference  VARCHAR(255) DEFAULT '',
     UNIQUE (ticket_id)
+);
+
+CREATE TABLE IF NOT EXISTS payment_pending (
+    id               SERIAL       PRIMARY KEY,
+    transaction_uuid VARCHAR(100) NOT NULL UNIQUE,
+    event_id         INTEGER      NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    tier_id          INTEGER      NOT NULL REFERENCES tiers(id) ON DELETE CASCADE,
+    email            VARCHAR(255) NOT NULL,
+    gateway          VARCHAR(20)  NOT NULL DEFAULT 'esewa',
+    amount           DECIMAL(10, 2) NOT NULL,
+    created_at       TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS stalls (
@@ -103,5 +116,6 @@ CREATE INDEX IF NOT EXISTS idx_tickets_customer_id       ON tickets (customer_id
 CREATE INDEX IF NOT EXISTS idx_customers_email           ON customers (email);
 CREATE INDEX IF NOT EXISTS idx_customer_tickets_customer ON customer_tickets (customer_id);
 CREATE INDEX IF NOT EXISTS idx_customer_tickets_ticket   ON customer_tickets (ticket_id);
+CREATE INDEX IF NOT EXISTS idx_payment_pending_uuid      ON payment_pending (transaction_uuid);
 CREATE INDEX IF NOT EXISTS idx_login_tokens_token       ON login_tokens (token);
 CREATE INDEX IF NOT EXISTS idx_login_tokens_expires_at   ON login_tokens (expires_at);

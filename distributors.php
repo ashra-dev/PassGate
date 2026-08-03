@@ -211,11 +211,13 @@ foreach ($distributors as $d) {
 
 $ticketsStmt = $db->prepare(
     'SELECT t.*, ti.name AS tier_name, ti.price, e.name AS event_name,
-            c.email AS customer_email, c.name AS customer_name
+            c.email AS customer_email, c.name AS customer_name,
+            ct.payment_gateway, ct.payment_reference, ct.payment_id
      FROM tickets t
      JOIN tiers ti ON ti.id = t.tier_id
      JOIN events e ON e.id = t.event_id
      LEFT JOIN customers c ON c.id = t.customer_id
+     LEFT JOIN customer_tickets ct ON ct.ticket_id = t.id
      WHERE t.event_id = :event_id
      ORDER BY t.physical_number'
 );
@@ -285,6 +287,7 @@ function ticketBenefits(PDO $db, string $ticketId, int $tierId): array
 
 $onlineSalesCount = (int) $summary['sold_online'];
 $distributorSalesCount = (int) $summary['allocated'];
+$gatewaySales = getOnlineSalesByGateway($db, $eventId);
 $chartLabels = array_column($stationChart, 'station_type');
 $chartData = array_map('intval', array_column($stationChart, 'cnt'));
 ?>
@@ -510,7 +513,7 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
         <div class="summary-card"><h3>Available / Allocated / Sold</h3><div class="metric"><?php echo (int) $summary['vault_available']; ?> / <?php echo (int) $summary['allocated']; ?> / <?php echo (int) $summary['sold_online']; ?></div></div>
     </div>
     <table>
-        <thead><tr><th>Ticket ID</th><th>Physical #</th><th>Tier</th><th>Price</th><th>Handler</th><th>Sold To</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Ticket ID</th><th>Physical #</th><th>Tier</th><th>Price</th><th>Handler</th><th>Sold To</th><th>Payment</th><th>Actions</th></tr></thead>
         <tbody>
             <?php foreach ($tickets as $row): ?>
                 <?php $benefits = ticketBenefits($db, $row['id'], (int) $row['tier_id']); ?>
@@ -533,6 +536,18 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
                             <span class="text-emerald-700"><?php echo htmlspecialchars($row['customer_email']); ?></span>
                         <?php elseif (!empty($row['allocated_distributor_name']) && $row['allocated_distributor_name'] === 'Online Sale'): ?>
                             <span class="text-emerald-700"><em>Online (legacy)</em></span>
+                        <?php else: ?>
+                            <span class="text-slate-400">—</span>
+                        <?php endif; ?>
+                    </td>
+                    <td>
+                        <?php if (!empty($row['customer_id'])): ?>
+                            <span class="text-xs">
+                                <strong><?php echo htmlspecialchars(ucfirst((string) ($row['payment_gateway'] ?: 'online'))); ?></strong>
+                                <?php if (!empty($row['payment_reference'])): ?>
+                                    <br><code class="text-[10px]"><?php echo htmlspecialchars($row['payment_reference']); ?></code>
+                                <?php endif; ?>
+                            </span>
                         <?php else: ?>
                             <span class="text-slate-400">—</span>
                         <?php endif; ?>
@@ -730,6 +745,24 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
         <div class="summary-card" style="border-top:4px solid #2563eb;"><h3>Distributor Allocations</h3><div class="metric" style="color:#2563eb;"><?php echo $distributorSalesCount; ?></div></div>
         <div class="summary-card" style="border-top:4px solid #ea580c;"><h3>Vault Available</h3><div class="metric" style="color:#ea580c;"><?php echo (int) $summary['vault_available']; ?></div></div>
     </div>
+
+    <h3>Sales by Payment Gateway</h3>
+    <table style="margin-bottom:25px;">
+        <thead><tr><th>Gateway</th><th>Tickets Sold</th><th>Revenue</th></tr></thead>
+        <tbody>
+            <?php if ($gatewaySales === []): ?>
+                <tr><td colspan="3">No online sales yet.</td></tr>
+            <?php else: ?>
+                <?php foreach ($gatewaySales as $gw): ?>
+                    <tr>
+                        <td><strong><?php echo htmlspecialchars(ucfirst($gw['payment_gateway'])); ?></strong></td>
+                        <td><?php echo (int) $gw['sale_count']; ?></td>
+                        <td><?php echo formatPrice($gw['revenue']); ?></td>
+                    </tr>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </tbody>
+    </table>
     <?php $filterDist = $_GET['filter_distributor'] ?? 'ALL'; ?>
     <form method="GET" style="margin-bottom:15px;">
         <input type="hidden" name="tab" value="analytics">

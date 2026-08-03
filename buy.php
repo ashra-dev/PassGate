@@ -11,7 +11,10 @@ $events = getEventsAvailableForPurchase($db);
 $isLoggedIn = isCustomerAuthenticated();
 $customerEmail = $isLoggedIn ? (string) ($_SESSION['customer_email'] ?? '') : '';
 $error = $_GET['error'] ?? '';
+$cancelled = isset($_GET['cancel']);
 $stripeConfigured = getStripeClient() !== null;
+$esewaConfigured = isEsewaConfigured();
+$anyGateway = $stripeConfigured || $esewaConfigured;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -39,11 +42,17 @@ $stripeConfigured = getStripeClient() !== null;
     <?php if ($error !== ''): ?>
       <div class="bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-4 py-3 text-sm"><?php echo htmlspecialchars($error); ?></div>
     <?php endif; ?>
-    <?php if (!$stripeConfigured): ?>
+    <?php if ($cancelled): ?>
+      <div class="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-sm">Payment was cancelled.</div>
+    <?php endif; ?>
+    <?php if (!$stripeConfigured && !$esewaConfigured): ?>
       <div class="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-sm">
-        <strong>Stripe not configured.</strong> Add real test keys to <code>.env</code> (not placeholders like <code>sk_test_...</code>).
-        Get keys from <a href="https://dashboard.stripe.com/test/apikeys" class="underline" target="_blank" rel="noopener">Stripe Dashboard → API keys</a>.
+        <strong>No payment gateway configured.</strong> Add Stripe and/or eSewa keys to <code>.env</code>.
       </div>
+    <?php elseif (!$stripeConfigured): ?>
+      <div class="bg-slate-100 border border-slate-200 text-slate-600 rounded-xl px-4 py-3 text-sm">Stripe is not configured — only eSewa is available.</div>
+    <?php elseif (!$esewaConfigured): ?>
+      <div class="bg-slate-100 border border-slate-200 text-slate-600 rounded-xl px-4 py-3 text-sm">eSewa is not configured — only Stripe is available.</div>
     <?php endif; ?>
 
     <?php if ($events === []): ?>
@@ -72,17 +81,35 @@ $stripeConfigured = getStripeClient() !== null;
                   </ul>
                 <?php endif; ?>
 
-                <form class="buy-form space-y-2" data-event-id="<?php echo (int) $event['id']; ?>" data-tier-id="<?php echo (int) $tier['id']; ?>">
+                <form class="buy-form space-y-3" data-event-id="<?php echo (int) $event['id']; ?>" data-tier-id="<?php echo (int) $tier['id']; ?>">
                   <input type="hidden" name="event_id" value="<?php echo (int) $event['id']; ?>">
                   <input type="hidden" name="tier_id" value="<?php echo (int) $tier['id']; ?>">
+
                   <label class="block text-[10px] uppercase font-bold text-slate-400">Email for ticket delivery</label>
                   <input type="email" name="email" required
                          value="<?php echo htmlspecialchars($customerEmail); ?>"
                          class="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm"
                          placeholder="you@email.com">
-                  <button type="submit" <?php echo $stripeConfigured ? '' : 'disabled'; ?>
+
+                  <fieldset class="space-y-2">
+                    <legend class="text-[10px] uppercase font-bold text-slate-400 mb-1">Payment method</legend>
+                    <?php if ($stripeConfigured): ?>
+                      <label class="flex items-center gap-2 text-sm cursor-pointer">
+                        <input type="radio" name="payment_method" value="stripe" class="text-indigo-600" <?php echo $stripeConfigured ? 'checked' : ''; ?> <?php echo !$stripeConfigured ? 'disabled' : ''; ?>>
+                        <i class="fa-brands fa-stripe text-indigo-600"></i> Stripe (card)
+                      </label>
+                    <?php endif; ?>
+                    <?php if ($esewaConfigured): ?>
+                      <label class="flex items-center gap-2 text-sm cursor-pointer">
+                        <input type="radio" name="payment_method" value="esewa" class="text-green-600" <?php echo !$stripeConfigured && $esewaConfigured ? 'checked' : ''; ?> <?php echo !$esewaConfigured ? 'disabled' : ''; ?>>
+                        <span class="font-semibold text-green-700">eSewa</span> (wallet)
+                      </label>
+                    <?php endif; ?>
+                  </fieldset>
+
+                  <button type="submit" <?php echo $anyGateway ? '' : 'disabled'; ?>
                           class="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold rounded-xl py-2.5 text-sm">
-                    Buy with Stripe
+                    Continue to payment
                   </button>
                 </form>
               </div>
@@ -94,22 +121,44 @@ $stripeConfigured = getStripeClient() !== null;
   </main>
 
   <script>
+    function submitEsewaForm(payload) {
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = payload.esewa_url;
+      Object.entries(payload).forEach(([key, value]) => {
+        if (key === 'esewa_url') return;
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = key;
+        input.value = value;
+        form.appendChild(input);
+      });
+      document.body.appendChild(form);
+      form.submit();
+    }
+
     document.querySelectorAll('.buy-form').forEach(form => {
       form.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const btn = form.querySelector('button');
+        const btn = form.querySelector('button[type="submit"]');
+        const fd = new FormData(form);
+        const paymentMethod = fd.get('payment_method');
+        const body = {
+          event_id: fd.get('event_id'),
+          tier_id: fd.get('tier_id'),
+          email: fd.get('email')
+        };
+
         btn.disabled = true;
         btn.textContent = 'Redirecting…';
-        const fd = new FormData(form);
+
+        const endpoint = paymentMethod === 'esewa' ? 'esewa_initiate.php' : 'create_checkout_session.php';
+
         try {
-          const res = await fetch('create_checkout_session.php', {
+          const res = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              event_id: fd.get('event_id'),
-              tier_id: fd.get('tier_id'),
-              email: fd.get('email')
-            })
+            body: JSON.stringify(body)
           });
           const raw = await res.text();
           let data;
@@ -119,20 +168,27 @@ $stripeConfigured = getStripeClient() !== null;
             alert('Server error (invalid response). Check PHP logs.');
             console.error(raw);
             btn.disabled = false;
-            btn.textContent = 'Buy with Stripe';
+            btn.textContent = 'Continue to payment';
             return;
           }
+
+          if (paymentMethod === 'esewa' && data.status === 'success' && data.esewa_payload) {
+            submitEsewaForm(data.esewa_payload);
+            return;
+          }
+
           if (data.url) {
             window.location.href = data.url;
-          } else {
-            alert(data.message || 'Checkout failed');
-            btn.disabled = false;
-            btn.textContent = 'Buy with Stripe';
+            return;
           }
-        } catch (err) {
-          alert('Network error — is the server running on the same URL you opened in the browser?');
+
+          alert(data.message || 'Checkout failed');
           btn.disabled = false;
-          btn.textContent = 'Buy with Stripe';
+          btn.textContent = 'Continue to payment';
+        } catch (err) {
+          alert('Network error — is the server running?');
+          btn.disabled = false;
+          btn.textContent = 'Continue to payment';
         }
       });
     });
