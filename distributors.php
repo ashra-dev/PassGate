@@ -12,7 +12,7 @@ if (
     || $_SESSION['distributor_authenticated'] !== true
     || ($_SESSION['distributor_role'] ?? '') !== 'admin'
 ) {
-    header('Location: index.php');
+    header('Location: terminal.php');
     exit;
 }
 
@@ -316,6 +316,8 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
         </div>
     </div>
     <div class="pg-admin-actions">
+        <a href="index.php" class="btn btn-ghost">Home</a>
+        <a href="buy.php" class="btn btn-ghost">Buy page</a>
         <a href="setup.php" class="btn btn-success">+ New Event</a>
         <a href="tickets_qr.php?<?php echo adminEventQuery($eventId); ?>" class="btn btn-primary">QR Codes</a>
         <form method="POST" onsubmit="return confirm('Unallocate all tickets for this event?');" style="display:inline;">

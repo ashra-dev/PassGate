@@ -48,7 +48,7 @@ if ($token !== '' && $email !== '') {
                 </div>
                 <div style="margin-top:1rem;display:grid;gap:0.55rem;">
                     <a class="pg-btn pg-btn--gold" href="manual_login.php">Try manual login</a>
-                    <a class="pg-btn pg-btn--ghost" href="index.php">Return to terminal</a>
+                    <a class="pg-btn pg-btn--ghost" href="terminal.php">Staff login</a>
                 </div>
             <?php else: ?>
                 <p class="pg-muted" style="margin:1rem 0 0;font-size:0.9rem;line-height:1.45;">
@@ -56,7 +56,7 @@ if ($token !== '' && $email !== '') {
                 </p>
                 <div style="margin-top:1.25rem;display:grid;gap:0.55rem;">
                     <a class="pg-btn pg-btn--gold" href="manual_login.php">Manual login with token</a>
-                    <a class="pg-btn pg-btn--ghost" href="index.php">Go to PassGate</a>
+                    <a class="pg-btn pg-btn--ghost" href="index.php">Go to home</a>
                 </div>
             <?php endif; ?>
         </div>

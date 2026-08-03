@@ -33,7 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <?php passgateRenderHead('PassGate – Ticket Lookup'); ?>
+    <?php passgateRenderHead('PassGate – Check ticket status'); ?>
 </head>
 <body class="pg-body">
 <div class="pg-auth-stage" style="align-items:flex-start;padding-top:2.5rem;">
@@ -42,9 +42,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="pg-brand-mark" style="margin:0 auto 0.75rem;font-size:1.15rem;">
                 <i class="fa-solid fa-ticket"></i>
             </div>
-            <p class="pg-eyebrow" style="margin:0 0 0.35rem;">Public lookup</p>
-            <h1 class="pg-brand" style="font-size:1.75rem;margin:0;">Ticket validation</h1>
-            <p class="pg-muted" style="margin:0.45rem 0 0;font-size:0.84rem;">Check status and benefits without redeeming.</p>
+            <p class="pg-eyebrow" style="margin:0 0 0.35rem;">Staff tool</p>
+            <h1 class="pg-brand" style="font-size:1.75rem;margin:0;">Check ticket status</h1>
+            <p class="pg-muted" style="margin:0.45rem 0 0;font-size:0.84rem;line-height:1.45;">
+                Read-only status check. This does <strong>not</strong> redeem benefits —
+                use the scanner terminal for that.
+            </p>
         </div>
 
         <form method="POST" class="pg-card" style="padding:1.25rem;">
@@ -53,7 +56,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                    value="<?php echo htmlspecialchars($submittedId); ?>"
                    placeholder="e.g. E1-TES-VIP-1"
                    required autofocus>
-            <button type="submit" class="pg-btn pg-btn--gold" style="margin-top:1rem;">Validate ticket</button>
+            <button type="submit" class="pg-btn pg-btn--gold" style="margin-top:1rem;">Check status</button>
         </form>
 
         <?php if ($error): ?>
@@ -138,7 +141,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <p class="pg-links" style="margin-top:1.25rem;">
-            <a href="index.php">Back to terminal</a>
+            <a href="terminal.php">Back to scanner</a>
+            · <a href="index.php">Home</a>
         </p>
     </div>
 </div>

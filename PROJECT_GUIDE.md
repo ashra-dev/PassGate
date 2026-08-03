@@ -26,6 +26,7 @@
 | Aesthetic refresh | Done | Bright blue modern theme |
 | 5 Motion + polish | Done | Empty states, light entrance motion |
 | 6 Admin ops tabs | Done | Dashboard, Ledger, Distributors, Stalls, Allocation, Analytics |
+| 7 Payment portal UI | Done | Buy/customer pages themed; eSewa/Stripe/dev checkout wired |
 
 ---
 
@@ -67,13 +68,25 @@ Your admin account (already created locally):
 
 | Page | URL | Who |
 |------|-----|-----|
-| Scanner terminal + login | http://localhost:8000/ | Everyone |
+| Landing (home) | http://localhost:8000/ | Everyone |
+| Buy tickets | http://localhost:8000/buy.php | Guests |
+| Customer login / tickets | http://localhost:8000/customer_login.php | Ticket holders |
+| Staff scanner login | http://localhost:8000/terminal.php | Stall / Admin / PIN |
 | Admin dashboard | http://localhost:8000/distributors.php | Admin only |
 | Create event wizard | http://localhost:8000/setup.php | Admin only |
 | Print QR codes | http://localhost:8000/tickets_qr.php | Admin only |
-| Public ticket check | http://localhost:8000/validate.php | Anyone |
+| Public / staff status check | http://localhost:8000/validate.php | Read-only ticket status (not a gate scan) |
 | Paste login token (dev) | http://localhost:8000/manual_login.php | Admin/distributor |
 | Stall login page | http://localhost:8000/stall_login.php | Stall staff |
+
+**Flow (account required before buy):**
+
+1. **New guest:** Create account → Buy → pay → My tickets (QR)  
+2. **Returning guest:** Log in → Buy or My tickets  
+3. **Staff:** Staff login → scan QR (redeems a benefit)  
+4. **Check ticket status** (`validate.php`): staff-only style tool — read-only, does **not** redeem  
+
+Buying without an account is blocked.
 
 ### Admin dashboard tabs
 
@@ -109,7 +122,7 @@ Ticket IDs look like: `E1-GLO-VIP-1` (event + tier + number).
 
 ### Admin magic link
 
-1. Open http://localhost:8000 → click **Admin**
+1. Open http://localhost:8000/terminal.php → **More options** → **Admin**
 2. Enter `yunaadhi1@gmail.com` → send login link
 3. Because `APP_DEBUG=1`, emails are **not** sent
 4. Open `dev_login.log` in this folder and copy the URL into the browser  

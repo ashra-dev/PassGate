@@ -12,7 +12,7 @@ if (
     || $_SESSION['distributor_authenticated'] !== true
     || ($_SESSION['distributor_role'] ?? '') !== 'admin'
 ) {
-    safeRedirect('index.php');
+    safeRedirect('terminal.php');
 }
 
 $db = getDb();
