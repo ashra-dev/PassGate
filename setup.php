@@ -5,6 +5,7 @@ declare(strict_types=1);
 session_start();
 
 require_once __DIR__ . '/includes/functions.php';
+require_once __DIR__ . '/includes/ui.php';
 
 if (
     !isset($_SESSION['distributor_authenticated'])
@@ -83,81 +84,164 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['confirmed'])) {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>PassGate Pro – Event Setup</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 30px; background: #f0f4f8; color: #333; }
-        .container { max-width: 750px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
-        h2 { border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; color: #1e293b; }
-        label { display: block; margin-top: 15px; font-weight: 600; font-size: 14px; color: #475569; }
-        input[type="text"], input[type="number"] { width: 100%; padding: 10px; margin-top: 5px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; }
-        .tier-card { border: 1px solid #cbd5e1; border-left: 6px solid #2563eb; padding: 20px; margin-top: 20px; border-radius: 8px; background: #f8fafc; position: relative; }
-        .benefit-row { display: flex; gap: 10px; margin-top: 8px; align-items: center; }
-        .benefit-row input { margin-top: 0; }
-        .btn { padding: 8px 14px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500; font-size: 13px; text-decoration: none; display: inline-block; }
-        .btn-secondary { background: #64748b; color: white; margin-top: 10px; }
-        .btn-danger { background: #dc2626; color: white; padding: 6px 10px; }
-        .btn-submit { background: #16a34a; color: white; width: 100%; padding: 14px; font-size: 16px; margin-top: 30px; border-radius: 8px; font-weight: bold; border: none; text-align: center; }
-        .tier-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-        .confirm-box { background: #f8fafc; padding: 20px; border-radius: 8px; border: 1px dashed #2563eb; margin-top: 15px; }
-        .confirm-tier-summary { margin-left: 20px; padding: 10px; border-left: 3px solid #64748b; background: #fff; margin-bottom: 10px; }
-    </style>
+    <?php
+    passgateRenderHead('PassGate – Event Setup', [
+        'extra' => <<<'CSS'
+<style>
+.pg-setup { max-width: 46rem; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
+.pg-setup-card {
+  background: #fff;
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-radius);
+  padding: 1.5rem;
+  box-shadow: var(--pg-shadow);
+  position: relative;
+  overflow: hidden;
+}
+.pg-setup-card::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  height: 5px;
+  background: linear-gradient(90deg, #2563eb, #0ea5e9, #12b886);
+}
+.pg-setup-card h2 {
+  margin: 0 0 0.35rem;
+  font-family: var(--pg-display);
+  font-size: 1.55rem;
+  letter-spacing: -0.03em;
+  color: var(--pg-text);
+}
+.pg-setup label {
+  display: block;
+  margin-top: 1rem;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pg-text-muted);
+}
+.pg-setup input[type="text"],
+.pg-setup input[type="number"] {
+  width: 100%;
+  margin-top: 0.4rem;
+  padding: 0.8rem 0.95rem;
+  border-radius: var(--pg-radius-sm);
+  border: 1.5px solid #e2e8f0;
+  background: #fff;
+  color: var(--pg-text);
+  font: inherit;
+  font-weight: 600;
+  box-sizing: border-box;
+}
+.pg-setup input:focus {
+  outline: none;
+  border-color: var(--pg-gold);
+  box-shadow: 0 0 0 4px var(--pg-gold-dim);
+}
+.tier-card {
+  margin-top: 1.1rem;
+  padding: 1.1rem;
+  border-radius: var(--pg-radius);
+  border: 1px solid #e2e8f0;
+  border-left: 4px solid #2563eb;
+  background: #f8fafc;
+}
+.tier-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem; }
+.tier-header h3 { margin: 0; font-family: var(--pg-display); font-size: 1.05rem; color: var(--pg-text); }
+.benefit-row { display: flex; gap: 0.55rem; margin-top: 0.55rem; align-items: center; }
+.benefit-row input { margin-top: 0 !important; }
+.confirm-box {
+  margin-top: 1rem;
+  padding: 1.1rem;
+  border-radius: var(--pg-radius);
+  border: 1.5px dashed rgba(37, 99, 235, 0.35);
+  background: #f8fafc;
+  color: var(--pg-text);
+}
+.confirm-tier-summary {
+  margin: 0.75rem 0 0;
+  padding: 0.75rem 0.85rem;
+  border-left: 3px solid #2563eb;
+  background: #fff;
+  border-radius: 0 0.55rem 0.55rem 0;
+  border: 1px solid #e2e8f0;
+  border-left-width: 3px;
+}
+#capacity_warning { display: none; color: var(--pg-deny); font-size: 0.8rem; font-weight: 700; margin-top: 0.4rem; }
+</style>
+CSS
+    ]);
+    ?>
 </head>
-<body>
-<div class="container">
-    <?php if ($is_confirmation_stage): ?>
-        <h2>Confirm Event Creation</h2>
-        <div class="confirm-box">
-            <p><strong>Event:</strong> <?php echo htmlspecialchars($payload['event_name']); ?></p>
-            <p><strong>Capacity:</strong> <?php echo htmlspecialchars($payload['total_tickets']); ?> tickets</p>
-            <?php
-            if (isset($payload['tier_name'])):
-                foreach ($payload['tier_name'] as $tIdx => $name):
-                    if (empty($name)) continue;
-                    ?>
-                    <div class="confirm-tier-summary">
-                        <strong><?php echo htmlspecialchars($name); ?></strong> –
-                        <?php echo (int) $payload['tier_qty'][$tIdx]; ?> @ <?php echo formatPrice((float) $payload['tier_price'][$tIdx]); ?>
-                        <ul style="margin:5px 0 0 0; padding-left:20px; font-size:13px;">
-                            <?php
-                            if (isset($payload['benefit_name'][$tIdx])):
-                                foreach ($payload['benefit_name'][$tIdx] as $bIdx => $bName):
-                                    if (empty($bName)) continue;
-                                    echo '<li>' . htmlspecialchars($bName) . ' (max: ' . (int) $payload['benefit_max'][$tIdx][$bIdx] . ')</li>';
-                                endforeach;
-                            endif;
-                            ?>
-                        </ul>
-                    </div>
-                <?php endforeach; endif; ?>
+<body class="pg-body pg-admin">
+<div class="pg-setup">
+    <div class="pg-setup-card">
+        <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.15rem;">
+            <div class="pg-brand-mark" style="width:2.3rem;height:2.3rem;border-radius:0.75rem;font-size:0.9rem;">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+            </div>
+            <div>
+                <p class="pg-eyebrow" style="margin:0;">Create event</p>
+                <h2 style="margin:0;border:none;padding:0;"><?php echo $is_confirmation_stage ? 'Confirm event' : 'Create event'; ?></h2>
+            </div>
         </div>
-        <form method="POST">
-            <input type="hidden" name="confirmed" value="1">
-            <button type="submit" class="btn btn-submit">Initialize Event in Database</button>
-        </form>
-        <div style="text-align:center; margin-top:15px;">
-            <a href="setup.php" class="btn btn-secondary" style="width:calc(100% - 28px); display:block; box-sizing:border-box; text-align:center;">Go Back</a>
-        </div>
-    <?php else: ?>
-        <h2>Event Setup Wizard</h2>
-        <p style="color:#64748b;font-size:14px;margin-bottom:15px;">Create a new event with ticket tiers and benefits. You can run this as many times as you need.</p>
-        <form method="POST" id="setupForm">
-            <label>Event Name</label>
-            <input type="text" name="event_name" required value="<?php echo htmlspecialchars($payload['event_name'] ?? ''); ?>" placeholder="e.g., Global Tech Summit 2026">
-            <label>Total Event Capacity</label>
-            <input type="number" id="total_capacity" name="total_tickets" required value="<?php echo htmlspecialchars($payload['total_tickets'] ?? ''); ?>" placeholder="e.g., 5000" oninput="validateFormState()">
-            <div id="capacity_warning" style="display:none; color:#dc2626; font-size:13px; font-weight:bold; margin-top:5px;"></div>
-            <div id="tier-container"></div>
-            <button type="button" class="btn btn-secondary" onclick="addTicketTier('+ Add Ticket Tier')">+ Add Ticket Tier</button>
-            <button type="submit" id="submit_btn" class="btn btn-submit" style="background:#2563eb;">Preview & Verify</button>
-        </form>
-        <?php if (hasAnyEvents($db)): ?>
-        <div style="text-align:center;margin-top:15px;">
-            <a href="distributors.php?tab=events" class="btn btn-secondary" style="width:calc(100% - 28px);display:block;box-sizing:border-box;text-align:center;">Back to Events</a>
-        </div>
+
+        <?php if ($is_confirmation_stage): ?>
+            <p class="pg-muted" style="margin:0 0 0.75rem;font-size:0.88rem;">Review tiers and benefits, then create the Vault Pool.</p>
+            <div class="confirm-box">
+                <p style="margin:0;"><strong>Event:</strong> <?php echo htmlspecialchars($payload['event_name']); ?></p>
+                <p style="margin:0.4rem 0 0;"><strong>Capacity:</strong> <?php echo htmlspecialchars($payload['total_tickets']); ?> tickets</p>
+                <?php
+                if (isset($payload['tier_name'])):
+                    foreach ($payload['tier_name'] as $tIdx => $name):
+                        if (empty($name)) continue;
+                        ?>
+                        <div class="confirm-tier-summary">
+                            <strong><?php echo htmlspecialchars($name); ?></strong> –
+                            <?php echo (int) $payload['tier_qty'][$tIdx]; ?> @ <?php echo formatPrice((float) $payload['tier_price'][$tIdx]); ?>
+                            <ul style="margin:0.4rem 0 0; padding-left:1.2rem; font-size:0.82rem; color:var(--pg-text-muted);">
+                                <?php
+                                if (isset($payload['benefit_name'][$tIdx])):
+                                    foreach ($payload['benefit_name'][$tIdx] as $bIdx => $bName):
+                                        if (empty($bName)) continue;
+                                        echo '<li>' . htmlspecialchars($bName) . ' (max: ' . (int) $payload['benefit_max'][$tIdx][$bIdx] . ')</li>';
+                                    endforeach;
+                                endif;
+                                ?>
+                            </ul>
+                        </div>
+                    <?php endforeach; endif; ?>
+            </div>
+            <form method="POST">
+                <input type="hidden" name="confirmed" value="1">
+                <button type="submit" class="pg-btn pg-btn--gold" style="margin-top:1.25rem;">Create Vault Pool</button>
+            </form>
+            <a href="setup.php" class="pg-btn pg-btn--ghost" style="width:100%;margin-top:0.65rem;">Go back</a>
+        <?php else: ?>
+            <p class="pg-muted" style="margin:0 0 0.5rem;font-size:0.88rem;">
+                Name the event, set capacity, then add tiers and benefits. Stall names should match benefit names later.
+            </p>
+            <form method="POST" id="setupForm">
+                <label for="event_name">Event name</label>
+                <input type="text" id="event_name" name="event_name" required value="<?php echo htmlspecialchars($payload['event_name'] ?? ''); ?>" placeholder="e.g. Test Fest 2026">
+
+                <label for="total_capacity">Total capacity</label>
+                <input type="number" id="total_capacity" name="total_tickets" required value="<?php echo htmlspecialchars($payload['total_tickets'] ?? ''); ?>" placeholder="e.g. 50" oninput="validateFormState()">
+                <div id="capacity_warning"></div>
+
+                <div id="tier-container"></div>
+
+                <button type="button" class="pg-btn pg-btn--ghost" style="margin-top:0.85rem;" onclick="addTicketTier()">+ Add ticket tier</button>
+                <button type="submit" id="submit_btn" class="pg-btn pg-btn--gold" style="margin-top:0.85rem;">Preview &amp; verify</button>
+            </form>
+            <?php if (hasAnyEvents($db)): ?>
+            <a href="distributors.php?tab=events" class="pg-btn pg-btn--ghost" style="width:100%;margin-top:0.75rem;">Back to Events</a>
+            <?php endif; ?>
         <?php endif; ?>
-    <?php endif; ?>
+    </div>
 </div>
+
 <script>
 let tierCounter = 0;
 const oldPayload = <?php echo json_encode($payload); ?>;
@@ -166,20 +250,21 @@ function addTicketTier(savedName = '', savedQty = '', savedPrice = '', savedBene
     const container = document.getElementById('tier-container');
     if (!container) return;
     const tierIndex = tierCounter++;
+    const nameVal = savedName === '+ Add Ticket Tier' ? '' : savedName;
     container.insertAdjacentHTML('beforeend', `
         <div class="tier-card" id="tier_card_${tierIndex}">
             <div class="tier-header">
-                <h3>Ticket Tier</h3>
-                <button type="button" class="btn btn-danger" onclick="removeElement('tier_card_${tierIndex}')">Remove</button>
+                <h3>Ticket tier</h3>
+                <button type="button" class="pg-btn pg-btn--ghost pg-btn--sm" style="color:var(--pg-deny);border-color:var(--pg-deny-border);" onclick="removeElement('tier_card_${tierIndex}')">Remove</button>
             </div>
-            <div style="display:flex; gap:15px;">
-                <div style="flex:2;"><label>Tier Name</label><input type="text" name="tier_name[${tierIndex}]" required value="${savedName === '+ Add Ticket Tier' ? '' : savedName}" placeholder="VIP"></div>
-                <div style="flex:1;"><label>Qty</label><input type="number" name="tier_qty[${tierIndex}]" class="tier-qty-input" required value="${savedQty}" oninput="validateFormState()"></div>
-                <div style="flex:1;"><label>Price (NRS)</label><input type="text" name="tier_price[${tierIndex}]" required value="${savedPrice}" placeholder="1999.00"></div>
+            <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
+                <div style="flex:2;min-width:140px;"><label>Tier name</label><input type="text" name="tier_name[${tierIndex}]" required value="${nameVal}" placeholder="VIP"></div>
+                <div style="flex:1;min-width:90px;"><label>Qty</label><input type="number" name="tier_qty[${tierIndex}]" class="tier-qty-input" required value="${savedQty}" oninput="validateFormState()"></div>
+                <div style="flex:1;min-width:110px;"><label>Price (NRS)</label><input type="text" name="tier_price[${tierIndex}]" required value="${savedPrice}" placeholder="1999.00"></div>
             </div>
-            <h4 style="margin-top:20px;">Benefits</h4>
+            <p class="pg-section-title" style="margin-top:1rem;">Benefits (stall names)</p>
             <div id="benefit_container_${tierIndex}"></div>
-            <button type="button" class="btn btn-secondary" style="background:#0284c7; padding:5px 10px; font-size:11px;" onclick="addBenefitRow(${tierIndex})">+ Add Benefit</button>
+            <button type="button" class="pg-btn pg-btn--ghost pg-btn--sm" style="margin-top:0.55rem;" onclick="addBenefitRow(${tierIndex})">+ Add benefit</button>
         </div>`);
     if (savedBenefits && savedBenefits.names.length > 0) {
         savedBenefits.names.forEach((n, i) => addBenefitRow(tierIndex, n, savedBenefits.maxes[i]));
@@ -195,8 +280,8 @@ function addBenefitRow(tierIndex, bName = '', bMax = '') {
     container.insertAdjacentHTML('beforeend', `
         <div class="benefit-row" id="benefit_row_${tierIndex}_${benefitIndex}">
             <input type="text" name="benefit_name[${tierIndex}][${benefitIndex}]" required value="${bName}" placeholder="Lunch" style="flex:3;">
-            <input type="number" name="benefit_max[${tierIndex}][${benefitIndex}]" class="benefit-max-input" required value="${bMax}" placeholder="Max" style="flex:1.5;" oninput="validateFormState()">
-            <button type="button" class="btn btn-danger" onclick="removeElement('benefit_row_${tierIndex}_${benefitIndex}')">X</button>
+            <input type="number" name="benefit_max[${tierIndex}][${benefitIndex}]" class="benefit-max-input" required value="${bMax}" placeholder="Max" style="flex:1.2;" oninput="validateFormState()">
+            <button type="button" class="pg-btn pg-btn--ghost pg-btn--sm" style="color:var(--pg-deny);border-color:var(--pg-deny-border);" onclick="removeElement('benefit_row_${tierIndex}_${benefitIndex}')">X</button>
         </div>`);
 }
 
@@ -206,12 +291,18 @@ function validateFormState() {
     const totalCapacityInput = document.getElementById('total_capacity');
     const warningDiv = document.getElementById('capacity_warning');
     const submitBtn = document.getElementById('submit_btn');
-    if (!totalCapacityInput) return;
+    if (!totalCapacityInput || !submitBtn) return;
     const maxCapacity = parseInt(totalCapacityInput.value) || 0;
     let runningTierSum = 0;
     document.querySelectorAll('.tier-qty-input').forEach(input => { runningTierSum += parseInt(input.value) || 0; });
-    let capacityIsValid = false;
-    if (maxCapacity > 0 && runningTierSum === maxCapacity) capacityIsValid = true;
+    let capacityIsValid = maxCapacity > 0 && runningTierSum === maxCapacity;
+    if (maxCapacity > 0 && runningTierSum !== maxCapacity) {
+        warningDiv.style.display = 'block';
+        warningDiv.textContent = `Tier quantities (${runningTierSum}) must equal total capacity (${maxCapacity}).`;
+    } else {
+        warningDiv.style.display = 'none';
+        warningDiv.textContent = '';
+    }
     let benefitsAreValid = true;
     document.querySelectorAll('.benefit-max-input').forEach(input => {
         const val = parseInt(input.value);

@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/includes/functions.php';
+require_once __DIR__ . '/includes/ui.php';
 
 $result = null;
 $error = null;
@@ -32,35 +33,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PassGate Pro – Ticket Validation</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <?php passgateRenderHead('PassGate – Ticket Lookup'); ?>
 </head>
-<body class="bg-slate-50 text-slate-800 font-sans antialiased min-h-screen">
-    <div class="max-w-lg mx-auto p-6 space-y-6">
-        <div class="text-center space-y-2 pt-8">
-            <i class="fa-solid fa-ticket text-4xl text-indigo-600"></i>
-            <h1 class="text-2xl font-bold">Ticket Validation</h1>
-            <p class="text-sm text-slate-500">Enter a ticket ID to verify its status and benefits.</p>
+<body class="pg-body">
+<div class="pg-auth-stage" style="align-items:flex-start;padding-top:2.5rem;">
+    <div style="width:100%;max-width:28rem;">
+        <div style="text-align:center;margin-bottom:1.25rem;">
+            <div class="pg-brand-mark" style="margin:0 auto 0.75rem;font-size:1.15rem;">
+                <i class="fa-solid fa-ticket"></i>
+            </div>
+            <p class="pg-eyebrow" style="margin:0 0 0.35rem;">Public lookup</p>
+            <h1 class="pg-brand" style="font-size:1.75rem;margin:0;">Ticket validation</h1>
+            <p class="pg-muted" style="margin:0.45rem 0 0;font-size:0.84rem;">Check status and benefits without redeeming.</p>
         </div>
 
-        <form method="POST" class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 space-y-4">
-            <label class="block text-xs uppercase font-bold text-slate-400">Ticket ID</label>
-            <input type="text" name="ticket_id" value="<?php echo htmlspecialchars($submittedId); ?>"
-                   placeholder="e.g. WOR-ASH-1"
-                   class="w-full border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500"
+        <form method="POST" class="pg-card" style="padding:1.25rem;">
+            <label class="pg-label" for="ticket_id">Ticket ID</label>
+            <input type="text" id="ticket_id" name="ticket_id" class="pg-input"
+                   value="<?php echo htmlspecialchars($submittedId); ?>"
+                   placeholder="e.g. E1-TES-VIP-1"
                    required autofocus>
-            <button type="submit"
-                    class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl py-3 text-sm">
-                Validate Ticket
-            </button>
+            <button type="submit" class="pg-btn pg-btn--gold" style="margin-top:1rem;">Validate ticket</button>
         </form>
 
         <?php if ($error): ?>
-            <div class="bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl p-4 text-sm">
-                <i class="fa-solid fa-circle-xmark mr-1"></i>
+            <div class="pg-alert" style="margin-top:1rem;">
+                <i class="fa-solid fa-circle-xmark"></i>
                 <?php echo htmlspecialchars($error); ?>
             </div>
         <?php endif; ?>
@@ -73,31 +71,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $totalUsed = array_sum(array_column($benefits, 'used'));
             $isFullyUsed = $totalMax > 0 && $totalUsed >= $totalMax;
             $displayStatus = $isFullyUsed ? 'Used' : ($ticket['status'] ?? 'Active');
+            $statusClass = $displayStatus === 'Active' ? 'is-ready' : 'is-locked';
             ?>
-            <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 space-y-4">
-                <div class="flex items-center justify-between">
-                    <span class="font-mono font-bold text-lg"><?php echo htmlspecialchars($ticket['id']); ?></span>
-                    <span class="px-3 py-1 rounded-full text-xs font-bold <?php echo $displayStatus === 'Active' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'; ?>">
-                        <?php echo htmlspecialchars($displayStatus); ?>
-                    </span>
+            <div class="pg-card" style="padding:1.25rem;margin-top:1rem;">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;margin-bottom:1rem;">
+                    <span class="pg-mono" style="font-weight:700;font-size:1rem;word-break:break-all;"><?php echo htmlspecialchars($ticket['id']); ?></span>
+                    <span class="pg-status-chip <?php echo $statusClass; ?>"><?php echo htmlspecialchars($displayStatus); ?></span>
                 </div>
 
-                <div class="grid grid-cols-2 gap-3 text-sm">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;font-size:0.85rem;">
                     <div>
-                        <span class="block text-[10px] uppercase font-bold text-slate-400">Event</span>
-                        <span class="font-semibold"><?php echo htmlspecialchars($ticket['event_name']); ?></span>
+                        <span class="pg-section-title" style="display:block;margin-bottom:0.2rem;">Event</span>
+                        <span style="font-weight:600;"><?php echo htmlspecialchars($ticket['event_name']); ?></span>
                     </div>
                     <div>
-                        <span class="block text-[10px] uppercase font-bold text-slate-400">Tier</span>
-                        <span class="font-semibold"><?php echo htmlspecialchars($ticket['tier_name']); ?></span>
+                        <span class="pg-section-title" style="display:block;margin-bottom:0.2rem;">Tier</span>
+                        <span style="font-weight:600;"><?php echo htmlspecialchars($ticket['tier_name']); ?></span>
                     </div>
                     <div>
-                        <span class="block text-[10px] uppercase font-bold text-slate-400">Physical #</span>
-                        <span class="font-semibold">#<?php echo (int) $ticket['physical_number']; ?></span>
+                        <span class="pg-section-title" style="display:block;margin-bottom:0.2rem;">Physical #</span>
+                        <span style="font-weight:600;">#<?php echo (int) $ticket['physical_number']; ?></span>
                     </div>
                     <div>
-                        <span class="block text-[10px] uppercase font-bold text-slate-400">Allocated To</span>
-                        <span class="font-semibold">
+                        <span class="pg-section-title" style="display:block;margin-bottom:0.2rem;">Allocated to</span>
+                        <span style="font-weight:600;">
                             <?php
                             if (!empty($ticket['allocated_distributor_name'])) {
                                 echo htmlspecialchars($ticket['allocated_distributor_name']);
@@ -111,49 +108,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </div>
                 </div>
 
-                <div>
-                    <h3 class="text-xs uppercase font-bold text-slate-400 mb-2">Benefits</h3>
-                    <div class="overflow-x-auto rounded-xl border border-slate-100">
-                        <table class="w-full text-sm">
-                            <thead>
-                                <tr class="bg-slate-800 text-white text-left">
-                                    <th class="px-4 py-2.5 font-bold">Benefit</th>
-                                    <th class="px-4 py-2.5 font-bold">Max</th>
-                                    <th class="px-4 py-2.5 font-bold">Used</th>
-                                    <th class="px-4 py-2.5 font-bold">Status</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($benefits as $benefit): ?>
-                                    <?php
-                                    $used = (int) $benefit['used'];
-                                    $max = (int) $benefit['max_uses'];
-                                    $isFull = $used >= $max;
-                                    ?>
-                                    <tr class="border-t border-slate-100 <?php echo $isFull ? 'bg-rose-50' : 'bg-white'; ?>">
-                                        <td class="px-4 py-3 font-medium"><?php echo htmlspecialchars(trim($benefit['name'])); ?></td>
-                                        <td class="px-4 py-3 font-mono"><?php echo $max; ?></td>
-                                        <td class="px-4 py-3 font-mono font-bold"><?php echo $used; ?></td>
-                                        <td class="px-4 py-3">
-                                            <?php if ($isFull): ?>
-                                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-100 text-rose-700">Fully used</span>
-                                            <?php else: ?>
-                                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-700"><?php echo $max - $used; ?> left</span>
-                                            <?php endif; ?>
-                                            <?php if (!empty($benefit['last_scan'])): ?>
-                                                <span class="block text-[10px] text-slate-400 mt-1">Last: <?php echo htmlspecialchars(substr((string) $benefit['last_scan'], 0, 16)); ?></span>
-                                            <?php endif; ?>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
+                <h3 class="pg-section-title" style="margin:1.1rem 0 0.55rem;">Benefits</h3>
+                <div style="display:grid;gap:0.5rem;">
+                    <?php foreach ($benefits as $benefit): ?>
+                        <?php
+                        $used = (int) $benefit['used'];
+                        $max = (int) $benefit['max_uses'];
+                        $isFull = $used >= $max;
+                        $pct = $max > 0 ? min(100, (int) round(($used / $max) * 100)) : 0;
+                        ?>
+                        <div class="pg-benefit<?php echo $isFull ? ' is-full' : ''; ?>">
+                            <div style="display:flex;justify-content:space-between;gap:0.5rem;">
+                                <span style="font-weight:600;"><?php echo htmlspecialchars(trim($benefit['name'])); ?></span>
+                                <span class="pg-mono" style="font-size:0.72rem;font-weight:700;"><?php echo $used; ?>/<?php echo $max; ?></span>
+                            </div>
+                            <div class="pg-bar"><div class="pg-bar__fill<?php echo $isFull ? ' is-full' : ''; ?>" style="width:<?php echo $pct; ?>%"></div></div>
+                            <?php if ($isFull): ?>
+                                <span style="font-size:0.65rem;font-weight:700;color:var(--pg-deny);">Fully used</span>
+                            <?php else: ?>
+                                <span style="font-size:0.65rem;color:var(--pg-ok);"><?php echo $max - $used; ?> left</span>
+                            <?php endif; ?>
+                            <?php if (!empty($benefit['last_scan'])): ?>
+                                <span class="pg-faint" style="display:block;font-size:0.65rem;margin-top:0.2rem;">Last: <?php echo htmlspecialchars(substr((string) $benefit['last_scan'], 0, 16)); ?></span>
+                            <?php endif; ?>
+                        </div>
+                    <?php endforeach; ?>
                 </div>
             </div>
         <?php endif; ?>
 
-        <p class="text-center text-xs text-slate-400"><a href="index.php" class="text-indigo-500 hover:underline">Terminal Login</a></p>
+        <p class="pg-links" style="margin-top:1.25rem;">
+            <a href="index.php">Back to terminal</a>
+        </p>
     </div>
+</div>
 </body>
 </html>

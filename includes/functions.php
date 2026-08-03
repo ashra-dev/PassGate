@@ -249,13 +249,13 @@ function getCurrentEventName(PDO $db, ?int $eventId = null): string
         $stmt->execute(['id' => $eventId]);
         $name = $stmt->fetchColumn();
 
-        return $name !== false ? (string) $name : 'PassGate Pro';
+        return $name !== false ? (string) $name : 'PassGate';
     }
 
     $stmt = $db->query('SELECT name FROM events ORDER BY id DESC LIMIT 1');
     $name = $stmt->fetchColumn();
 
-    return $name !== false ? (string) $name : 'PassGate Pro';
+    return $name !== false ? (string) $name : 'PassGate';
 }
 
 /**
@@ -968,8 +968,28 @@ function safeRedirect(string $path): never
  */
 function dispatchMagicLinkEmail(string $email, string $token): void
 {
+    // Dev/local: write link synchronously (also avoids Unix-only backgrounding on Windows).
+    require_once __DIR__ . '/mailer.php';
+    if (shouldUseDevMailFallback()) {
+        sendMagicLinkEmail($email, $token);
+        return;
+    }
+
     $phpBinary = PHP_BINARY;
     $script = __DIR__ . '/../send_mail_async.php';
+
+    if (PHP_OS_FAMILY === 'Windows') {
+        $command = sprintf(
+            'start /B "" %s %s %s %s',
+            escapeshellarg($phpBinary),
+            escapeshellarg($script),
+            escapeshellarg($email),
+            escapeshellarg($token)
+        );
+        pclose(popen($command, 'r'));
+        return;
+    }
+
     $command = sprintf(
         '%s %s %s %s > /dev/null 2>&1 &',
         escapeshellarg($phpBinary),
@@ -994,11 +1014,11 @@ function sendMagicLinkEmail(string $email, string $token): bool
     $link = $appUrl . '/login.php?token=' . urlencode($token) . '&email=' . urlencode($email);
     $manualUrl = $appUrl . '/manual_login.php';
 
-    $subject = 'Your PassGate Pro Login Link';
+    $subject = 'Your PassGate Login Link';
     $textBody = "Click the link below to sign in. This link expires in 1 hour.\n\n{$link}\n\n"
         . "If the link doesn't open, go to {$manualUrl} and paste this token:\n{$token}\n";
     $htmlBody = '<p>Click the link below to sign in. This link expires in 1 hour.</p>'
-        . '<p><a href="' . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '">Sign in to PassGate Pro</a></p>'
+        . '<p><a href="' . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '">Sign in to PassGate</a></p>'
         . '<p>Or copy this URL:<br><code>' . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '</code></p>'
         . '<p>If the link doesn&rsquo;t work, go to '
         . '<a href="' . htmlspecialchars($manualUrl, ENT_QUOTES, 'UTF-8') . '">manual login</a>'

@@ -5,6 +5,7 @@ declare(strict_types=1);
 session_start();
 
 require_once __DIR__ . '/includes/functions.php';
+require_once __DIR__ . '/includes/ui.php';
 
 if (
     !isset($_SESSION['distributor_authenticated'])
@@ -285,64 +286,47 @@ function ticketBenefits(PDO $db, string $ticketId, int $tierId): array
     return $stmt->fetchAll();
 }
 
+$chartLabels = array_column($stationChart, 'station_type');
+$chartData = array_map('intval', array_column($stationChart, 'cnt'));
 $onlineSalesCount = (int) $summary['sold_online'];
 $distributorSalesCount = (int) $summary['allocated'];
 $gatewaySales = getOnlineSalesByGateway($db, $eventId);
-$chartLabels = array_column($stationChart, 'station_type');
-$chartData = array_map('intval', array_column($stationChart, 'cnt'));
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>PassGate Pro – Admin Dashboard</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 25px; background: #f8fafc; color: #0f172a; }
-        .header-container { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
-        .tab-bar { display: flex; gap: 10px; margin-bottom: 25px; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; flex-wrap: wrap; }
-        .tab-link { padding: 10px 20px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 14px; background: #e2e8f0; color: #475569; }
-        .tab-link.active { background: #2563eb; color: white; }
-        .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .summary-card { background: white; padding: 20px; border-radius: 10px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
-        .summary-card .metric { font-size: 26px; font-weight: bold; margin-top: 5px; }
-        table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); margin-bottom: 25px; }
-        th, td { padding: 12px 15px; text-align: left; font-size: 13px; border-bottom: 1px solid #e2e8f0; }
-        th { background-color: #1e293b; color: white; }
-        .btn { padding: 8px 14px; border: none; border-radius: 6px; font-size: 13px; font-weight: bold; cursor: pointer; color: white; text-decoration: none; display: inline-block; }
-        .btn-warning { background: #ea580c; } .btn-danger { background: #dc2626; } .btn-primary { background: #2563eb; } .btn-success { background: #16a34a; }
-        .confirm-window { background: #fff; padding: 25px; border: 2px dashed #2563eb; border-radius: 10px; max-width: 700px; margin: 0 auto; }
-        .scroller-box { background: #f8fafc; border: 1px solid #cbd5e1; padding: 15px; max-height: 280px; overflow-y: scroll; font-family: monospace; border-radius: 6px; margin: 15px 0; }
-        .badge-count { background: #eff6ff; color: #1e40af; padding: 4px 8px; border-radius: 12px; font-weight: bold; font-size: 11px; border: 1px solid #bfdbfe; }
-        .preview-group-row { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; margin-bottom: 12px; }
-        .preview-type-title { background: #1e293b; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; color: white; margin-bottom: 10px; text-transform: uppercase; display: inline-block; }
-        .preview-column-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-        .preview-pill { background: #e0f2fe; color: #0369a1; padding: 6px 10px; border-radius: 4px; font-size: 12px; font-weight: 500; border: 1px solid #bae6fd; text-align: center; }
-        .chart-box { background: white; padding: 20px; border-radius: 10px; border: 1px solid #e2e8f0; max-width: 500px; }
-        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .event-bar { background:white; padding:15px 20px; border-radius:10px; border:1px solid #e2e8f0; margin-bottom:20px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
-        .event-bar select { padding:8px 12px; border-radius:6px; border:1px solid #cbd5e1; font-size:14px; min-width:220px; }
-        .event-badge { background:#eff6ff; color:#1e40af; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:bold; }
-    </style>
+    <?php
+    passgateRenderHead('PassGate – Admin', [
+        'extra' => '<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>',
+    ]);
+    ?>
 </head>
-<body>
+<body class="pg-body pg-admin">
+<div class="pg-admin-wrap">
 
-<div class="header-container">
-    <h2>PassGate Pro – Admin</h2>
-    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+<div class="pg-admin-top">
+    <div class="pg-admin-brand">
+        <div class="pg-brand-mark" style="width:2.4rem;height:2.4rem;border-radius:0.8rem;font-size:0.95rem;">
+            <i class="fa-solid fa-ticket"></i>
+        </div>
+        <div>
+            <p class="pg-eyebrow" style="margin:0;">Event control</p>
+            <h1>PassGate</h1>
+            <p>Distributor Admin · Vault &amp; stations</p>
+        </div>
+    </div>
+    <div class="pg-admin-actions">
         <a href="setup.php" class="btn btn-success">+ New Event</a>
         <a href="tickets_qr.php?<?php echo adminEventQuery($eventId); ?>" class="btn btn-primary">QR Codes</a>
-        <form method="POST" onsubmit="return confirm('Unallocate all tickets for this event?');">
+        <form method="POST" onsubmit="return confirm('Unallocate all tickets for this event?');" style="display:inline;">
             <input type="hidden" name="global_action" value="reset_allocations">
-            <button type="submit" class="btn" style="background:#475569;">Reset Allocations</button>
+            <button type="submit" class="btn btn-ghost">Reset Allocations</button>
         </form>
-        <form method="POST" onsubmit="return confirm('Reset all scans for this event?');">
+        <form method="POST" onsubmit="return confirm('Reset all scans for this event?');" style="display:inline;">
             <input type="hidden" name="global_action" value="reset_scans">
             <button type="submit" class="btn btn-warning">Reset Scans</button>
         </form>
-        <form method="POST" onsubmit="return confirm('Delete this entire event and all its tickets?');">
+        <form method="POST" onsubmit="return confirm('Delete this entire event and all its tickets?');" style="display:inline;">
             <input type="hidden" name="global_action" value="delete_registry">
             <button type="submit" class="btn btn-danger">Delete Event</button>
         </form>
@@ -359,17 +343,17 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <form method="GET" style="display:flex;align-items:center;gap:10px;">
             <?php if ($active_tab !== 'dashboard'): ?><input type="hidden" name="tab" value="<?php echo htmlspecialchars($active_tab); ?>"><?php endif; ?>
-            <label for="event_id" style="font-size:13px;font-weight:600;">Switch event:</label>
+            <label for="event_id">Switch event</label>
             <select name="event_id" id="event_id" onchange="this.form.submit()">
                 <?php foreach ($allEvents as $ev): ?>
                     <option value="<?php echo (int) $ev['id']; ?>" <?php echo (int) $ev['id'] === $eventId ? 'selected' : ''; ?>>
-                        <?php echo htmlspecialchars($ev['name']); ?> (<?php echo (int) $ev['vault_available']; ?> avail / <?php echo (int) $ev['ticket_count']; ?> total)
+                        <?php echo htmlspecialchars($ev['name']); ?> (<?php echo (int) $ev['ticket_count']; ?> tickets)
                     </option>
                 <?php endforeach; ?>
             </select>
         </form>
         <?php if ($terminalEventId === $eventId): ?>
-            <span style="font-size:12px;color:#16a34a;font-weight:600;">● Terminal active</span>
+            <span class="pg-status-chip is-ready">Terminal active</span>
         <?php else: ?>
             <form method="POST" style="display:inline;">
                 <input type="hidden" name="global_action" value="set_terminal_event">
@@ -381,7 +365,7 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
 <?php endif; ?>
 
 <?php if (!$is_allocation_confirm_stage): ?>
-<div class="tab-bar">
+<nav class="tab-bar" aria-label="Admin sections">
     <a href="?<?php echo adminEventQuery($eventId, 'events'); ?>" class="tab-link <?php echo $active_tab === 'events' ? 'active' : ''; ?>">Events</a>
     <a href="?<?php echo adminEventQuery($eventId, 'dashboard'); ?>" class="tab-link <?php echo $active_tab === 'dashboard' ? 'active' : ''; ?>">Dashboard</a>
     <a href="?<?php echo adminEventQuery($eventId, 'ledger'); ?>" class="tab-link <?php echo $active_tab === 'ledger' ? 'active' : ''; ?>">Ledger</a>
@@ -391,12 +375,15 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
     <a href="?<?php echo adminEventQuery($eventId, 'analytics'); ?>" class="tab-link <?php echo $active_tab === 'analytics' ? 'active' : ''; ?>">Analytics</a>
     <a href="?<?php echo adminEventQuery($eventId, 'customers'); ?>" class="tab-link <?php echo $active_tab === 'customers' ? 'active' : ''; ?>">Customers</a>
     <a href="tickets_qr.php?<?php echo adminEventQuery($eventId); ?>" class="tab-link">QR Codes</a>
-</div>
+</nav>
 <?php endif; ?>
 
 <?php if ($active_tab === 'events'): ?>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-        <h3>All Events</h3>
+    <div class="pg-section-head">
+        <div>
+            <h3>All Events</h3>
+            <p>Create events, open reports, and choose which event the terminal uses.</p>
+        </div>
         <a href="setup.php" class="btn btn-success">+ Create Event</a>
     </div>
     <table>
@@ -414,7 +401,14 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
         </thead>
         <tbody>
             <?php if ($allEvents === []): ?>
-                <tr><td colspan="8">No events yet. <a href="setup.php">Create your first event</a>.</td></tr>
+                <tr><td colspan="8">
+                    <div class="pg-empty" style="border:none;box-shadow:none;padding:2rem 1rem;">
+                        <div class="pg-empty__icon"><i class="fa-solid fa-calendar-plus"></i></div>
+                        <h3>No events yet</h3>
+                        <p>Create your first event to generate the ticket vault and start allocating passes.</p>
+                        <a href="setup.php" class="btn btn-primary">Create event</a>
+                    </div>
+                </td></tr>
             <?php else: ?>
                 <?php foreach ($allEvents as $ev): ?>
                     <tr>
@@ -441,22 +435,32 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
     </table>
 
 <?php elseif ($active_tab === 'dashboard'): ?>
+    <div class="pg-section-head">
+        <div>
+            <h3>Dashboard</h3>
+            <p>Live vault status and recent station activity for this event.</p>
+        </div>
+    </div>
     <div class="summary-grid">
-        <div class="summary-card" style="border-top:4px solid #2563eb;"><h3>Total Tickets</h3><div class="metric"><?php echo (int) $summary['total']; ?></div></div>
-        <div class="summary-card" style="border-top:4px solid #ea580c;"><h3>Vault Available</h3><div class="metric" style="color:#ea580c;"><?php echo (int) $summary['vault_available']; ?></div></div>
-        <div class="summary-card" style="border-top:4px solid #9333ea;"><h3>Allocated</h3><div class="metric" style="color:#9333ea;"><?php echo (int) $summary['allocated']; ?></div></div>
-        <div class="summary-card" style="border-top:4px solid #16a34a;"><h3>Sold Online</h3><div class="metric" style="color:#16a34a;"><?php echo (int) $summary['sold_online']; ?></div></div>
+        <div class="summary-card"><h3>Total Tickets</h3><div class="metric"><?php echo (int) $summary['total']; ?></div></div>
+        <div class="summary-card"><h3>Vault Available</h3><div class="metric"><?php echo (int) $summary['vault_available']; ?></div></div>
+        <div class="summary-card"><h3>Allocated</h3><div class="metric"><?php echo (int) $summary['allocated']; ?></div></div>
+        <div class="summary-card"><h3>Sold Online</h3><div class="metric"><?php echo (int) $summary['sold_online']; ?></div></div>
     </div>
 
     <div class="two-col">
         <div>
             <h3>Scan Activity (Last 24h)</h3>
-            <table>
-                <thead><tr><th>Time</th><th>Ticket</th><th>Station</th><th>Stall</th></tr></thead>
-                <tbody>
-                    <?php if ($recentScans === []): ?>
-                        <tr><td colspan="4">No scans in the last 24 hours.</td></tr>
-                    <?php else: ?>
+            <?php if ($recentScans === []): ?>
+                <div class="pg-empty" style="padding:1.75rem 1rem;">
+                    <div class="pg-empty__icon"><i class="fa-solid fa-qrcode"></i></div>
+                    <h3>No scans yet</h3>
+                    <p>When stalls redeem benefits, recent scans show up here.</p>
+                </div>
+            <?php else: ?>
+                <table>
+                    <thead><tr><th>Time</th><th>Ticket</th><th>Station</th><th>Stall</th></tr></thead>
+                    <tbody>
                         <?php foreach ($recentScans as $scan): ?>
                             <tr>
                                 <td><?php echo htmlspecialchars($scan['scanned_at']); ?></td>
@@ -465,9 +469,9 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
                                 <td><?php echo htmlspecialchars($scan['stall_name'] ?? '—'); ?></td>
                             </tr>
                         <?php endforeach; ?>
-                    <?php endif; ?>
-                </tbody>
-            </table>
+                    </tbody>
+                </table>
+            <?php endif; ?>
         </div>
         <div>
             <h3>Scans by Station</h3>
@@ -477,159 +481,217 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
         </div>
     </div>
 
-    <h3>Distributor Performance</h3>
-    <table>
-        <thead><tr><th>Distributor</th><th>Tickets Held</th><th>Scans Used</th><th>Benefits Consumed</th></tr></thead>
-        <tbody>
-            <?php foreach ($distributorPerformance as $perf): ?>
-                <?php
-                $capacity = (int) $perf['total_benefit_capacity'];
-                $used = (int) $perf['scans_used'];
-                $pct = $capacity > 0 ? round(($used / $capacity) * 100, 1) : 0;
-                ?>
-                <tr>
-                    <td><strong><?php echo htmlspecialchars($perf['name']); ?></strong></td>
-                    <td><?php echo (int) $perf['tickets_held']; ?></td>
-                    <td><?php echo $used; ?></td>
-                    <td><span class="badge-count"><?php echo $pct; ?>%</span></td>
-                </tr>
-            <?php endforeach; ?>
-        </tbody>
-    </table>
+    <div class="pg-section-head" style="margin-top:0.5rem;">
+        <div>
+            <h3>Distributor Performance</h3>
+            <p>How allocated inventory is converting into benefit redemptions.</p>
+        </div>
+    </div>
+    <?php if ($distributorPerformance === []): ?>
+        <div class="pg-empty" style="padding:1.75rem 1rem;">
+            <div class="pg-empty__icon"><i class="fa-solid fa-users"></i></div>
+            <h3>No distributor activity</h3>
+            <p>Add distributors and allocate vault tickets to see performance here.</p>
+            <a href="?<?php echo adminEventQuery($eventId, 'distributors'); ?>" class="btn btn-primary">Add distributor</a>
+        </div>
+    <?php else: ?>
+        <table>
+            <thead><tr><th>Distributor</th><th>Tickets Held</th><th>Scans Used</th><th>Benefits Consumed</th></tr></thead>
+            <tbody>
+                <?php foreach ($distributorPerformance as $perf): ?>
+                    <?php
+                    $capacity = (int) $perf['total_benefit_capacity'];
+                    $used = (int) $perf['scans_used'];
+                    $pct = $capacity > 0 ? round(($used / $capacity) * 100, 1) : 0;
+                    ?>
+                    <tr>
+                        <td><strong><?php echo htmlspecialchars($perf['name']); ?></strong></td>
+                        <td><?php echo (int) $perf['tickets_held']; ?></td>
+                        <td><?php echo $used; ?></td>
+                        <td><span class="badge-count"><?php echo $pct; ?>%</span></td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    <?php endif; ?>
     <script>
         new Chart(document.getElementById('stationChart'), {
             type: 'doughnut',
             data: {
-                labels: <?php echo json_encode($chartLabels); ?>,
-                datasets: [{ data: <?php echo json_encode($chartData); ?>, backgroundColor: ['#2563eb','#16a34a','#ea580c','#9333ea','#0891b2'] }]
+                labels: <?php echo json_encode($chartLabels ?: ['No scans']); ?>,
+                datasets: [{ data: <?php echo json_encode($chartData ?: [1]); ?>, backgroundColor: <?php echo $chartData === [] ? "['#e2e8f0']" : "['#2563eb','#16a34a','#ea580c','#9333ea','#0891b2']"; ?> }]
             },
             options: { plugins: { legend: { position: 'bottom' } } }
         });
     </script>
 
 <?php elseif ($active_tab === 'ledger'): ?>
+    <div class="pg-section-head">
+        <div>
+            <h3>Ticket Ledger</h3>
+            <p>Every vault ticket — who holds it and benefit usage so far.</p>
+        </div>
+    </div>
     <div class="summary-grid">
         <div class="summary-card"><h3>Total</h3><div class="metric"><?php echo (int) $summary['total']; ?></div></div>
         <div class="summary-card"><h3>Available / Allocated / Sold</h3><div class="metric"><?php echo (int) $summary['vault_available']; ?> / <?php echo (int) $summary['allocated']; ?> / <?php echo (int) $summary['sold_online']; ?></div></div>
     </div>
-    <table>
-        <thead><tr><th>Ticket ID</th><th>Physical #</th><th>Tier</th><th>Price</th><th>Handler</th><th>Sold To</th><th>Payment</th><th>Actions</th></tr></thead>
-        <tbody>
-            <?php foreach ($tickets as $row): ?>
-                <?php $benefits = ticketBenefits($db, $row['id'], (int) $row['tier_id']); ?>
-                <tr>
-                    <td><code><?php echo htmlspecialchars($row['id']); ?></code></td>
-                    <td><strong>#<?php echo (int) $row['physical_number']; ?></strong></td>
-                    <td><?php echo htmlspecialchars($row['tier_name']); ?></td>
-                    <td><?php echo formatPrice((float) $row['price']); ?></td>
-                    <td>
-                        <?php if (!empty($row['customer_id'])): ?>
-                            <span class="text-emerald-700 font-semibold">Online Sale</span>
-                        <?php elseif (empty($row['allocated_distributor_id'])): ?>
-                            <em>Vault Pool</em>
-                        <?php else: ?>
-                            <?php echo htmlspecialchars($row['allocated_distributor_name']); ?>
-                        <?php endif; ?>
-                    </td>
-                    <td>
-                        <?php if (!empty($row['customer_email'])): ?>
-                            <span class="text-emerald-700"><?php echo htmlspecialchars($row['customer_email']); ?></span>
-                        <?php elseif (!empty($row['allocated_distributor_name']) && $row['allocated_distributor_name'] === 'Online Sale'): ?>
-                            <span class="text-emerald-700"><em>Online (legacy)</em></span>
-                        <?php else: ?>
-                            <span class="text-slate-400">—</span>
-                        <?php endif; ?>
-                    </td>
-                    <td>
-                        <?php if (!empty($row['customer_id'])): ?>
-                            <span class="text-xs">
+    <?php if ($tickets === []): ?>
+        <div class="pg-empty">
+            <div class="pg-empty__icon"><i class="fa-solid fa-vault"></i></div>
+            <h3>Vault is empty</h3>
+            <p>Create an event with tiers to generate tickets in the Vault Pool.</p>
+            <a href="setup.php" class="btn btn-primary">Create event</a>
+        </div>
+    <?php else: ?>
+        <table>
+            <thead><tr><th>Ticket ID</th><th>Physical #</th><th>Tier</th><th>Price</th><th>Handler</th><th>Sold To</th><th>Payment</th><th>Benefits</th></tr></thead>
+            <tbody>
+                <?php foreach ($tickets as $row): ?>
+                    <?php $benefits = ticketBenefits($db, $row['id'], (int) $row['tier_id']); ?>
+                    <tr>
+                        <td><code><?php echo htmlspecialchars($row['id']); ?></code></td>
+                        <td><strong>#<?php echo (int) $row['physical_number']; ?></strong></td>
+                        <td><?php echo htmlspecialchars($row['tier_name']); ?></td>
+                        <td><?php echo formatPrice((float) $row['price']); ?></td>
+                        <td>
+                            <?php if (!empty($row['customer_id'])): ?>
+                                <strong style="color:var(--pg-ok);">Online Sale</strong>
+                            <?php elseif (empty($row['allocated_distributor_id'])): ?>
+                                <em>Vault Pool</em>
+                            <?php else: ?>
+                                <?php echo htmlspecialchars($row['allocated_distributor_name']); ?>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <?php if (!empty($row['customer_email'])): ?>
+                                <?php echo htmlspecialchars($row['customer_email']); ?>
+                            <?php else: ?>
+                                —
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <?php if (!empty($row['customer_id'])): ?>
                                 <strong><?php echo htmlspecialchars(ucfirst((string) ($row['payment_gateway'] ?: 'online'))); ?></strong>
                                 <?php if (!empty($row['payment_reference'])): ?>
-                                    <br><code class="text-[10px]"><?php echo htmlspecialchars($row['payment_reference']); ?></code>
+                                    <br><code style="font-size:0.65rem;"><?php echo htmlspecialchars($row['payment_reference']); ?></code>
                                 <?php endif; ?>
-                            </span>
-                        <?php else: ?>
-                            <span class="text-slate-400">—</span>
-                        <?php endif; ?>
-                    </td>
-                    <td>
-                        <span class="text-xs text-slate-500">
-                            <?php
-                            $parts = [];
-                            foreach ($benefits as $b) {
-                                $parts[] = htmlspecialchars(trim($b['name'])) . ' ' . (int) $b['used'] . '/' . (int) $b['max_uses'];
-                            }
-                            echo implode(' · ', $parts);
-                            ?>
-                        </span>
-                        <button type="button" class="btn btn-primary view-benefits-btn" style="margin-top:6px;padding:4px 10px;font-size:11px;"
-                                data-ticket-id="<?php echo htmlspecialchars($row['id'], ENT_QUOTES); ?>">
-                            View Benefits
-                        </button>
-                    </td>
-                </tr>
-            <?php endforeach; ?>
-        </tbody>
-    </table>
+                            <?php else: ?>
+                                —
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <div class="pg-benefit-chips">
+                                <?php foreach ($benefits as $b):
+                                    $used = (int) $b['used'];
+                                    $max = (int) $b['max_uses'];
+                                    $chipClass = '';
+                                    if ($used > 0 && $used < $max) {
+                                        $chipClass = 'is-ok';
+                                    } elseif ($used >= $max && $max > 0) {
+                                        $chipClass = 'is-full';
+                                    }
+                                ?>
+                                    <span class="pg-chip <?php echo $chipClass; ?>">
+                                        <?php echo htmlspecialchars(trim($b['name'])); ?>
+                                        <?php echo $used; ?>/<?php echo $max; ?>
+                                    </span>
+                                <?php endforeach; ?>
+                            </div>
+                            <button type="button" class="btn btn-primary view-benefits-btn" style="padding:4px 10px;font-size:11px;"
+                                    data-ticket-id="<?php echo htmlspecialchars($row['id'], ENT_QUOTES); ?>">
+                                View Benefits
+                            </button>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    <?php endif; ?>
 
 <?php elseif ($active_tab === 'distributors'): ?>
-    <div style="background:white;padding:20px;border-radius:8px;border:1px solid #e2e8f0;margin-bottom:25px;">
+    <div class="pg-section-head">
+        <div>
+            <h3>Distributors</h3>
+            <p>Companies that receive ticket ranges from the Vault Pool.</p>
+        </div>
+    </div>
+    <div class="pg-form-panel">
         <h4>Add Distributor</h4>
-        <form method="POST" style="display:flex;gap:15px;align-items:flex-end;flex-wrap:wrap;">
+        <p class="pg-form-hint">They log in with the same magic-link flow as admin, using this email.</p>
+        <form method="POST" class="pg-form-grid">
             <input type="hidden" name="global_action" value="add_distributor">
-            <div style="flex:1;min-width:150px;"><label>Company</label><input type="text" name="d_name" required style="width:100%;padding:8px;"></div>
-            <div style="flex:1;min-width:150px;"><label>Email</label><input type="email" name="d_email" required style="width:100%;padding:8px;"></div>
-            <div style="flex:1;min-width:120px;"><label>Role</label><select name="d_role" style="width:100%;padding:8px;"><option value="distributor">Distributor</option><option value="admin">Admin</option></select></div>
+            <div class="pg-field"><label>Company</label><input type="text" name="d_name" required placeholder="Acme Tickets"></div>
+            <div class="pg-field"><label>Email</label><input type="email" name="d_email" required placeholder="ops@company.com"></div>
+            <div class="pg-field"><label>Role</label><select name="d_role"><option value="distributor">Distributor</option><option value="admin">Admin</option></select></div>
             <button type="submit" class="btn btn-success">Save</button>
         </form>
     </div>
-    <table>
-        <thead><tr><th>ID</th><th>Company</th><th>Email</th><th>Role</th><th></th></tr></thead>
-        <tbody>
-            <?php foreach ($distributors as $d): ?>
-                <tr>
-                    <td><code><?php echo htmlspecialchars($d['id']); ?></code></td>
-                    <td><strong><?php echo htmlspecialchars($d['name']); ?></strong></td>
-                    <td><?php echo htmlspecialchars($d['email']); ?></td>
-                    <td><?php echo htmlspecialchars($d['role']); ?></td>
-                    <td>
-                        <form method="POST" onsubmit="return confirm('Delete this distributor?');">
-                            <input type="hidden" name="global_action" value="delete_distributor">
-                            <input type="hidden" name="d_id" value="<?php echo htmlspecialchars($d['id']); ?>">
-                            <button type="submit" class="btn btn-danger" style="padding:4px 8px;font-size:11px;">Delete</button>
-                        </form>
-                    </td>
-                </tr>
-            <?php endforeach; ?>
-        </tbody>
-    </table>
+    <?php if ($distributors === []): ?>
+        <div class="pg-empty">
+            <div class="pg-empty__icon"><i class="fa-solid fa-building"></i></div>
+            <h3>No distributors yet</h3>
+            <p>Add a company above, then allocate vault tickets on the Allocation tab.</p>
+        </div>
+    <?php else: ?>
+        <table>
+            <thead><tr><th>ID</th><th>Company</th><th>Email</th><th>Role</th><th></th></tr></thead>
+            <tbody>
+                <?php foreach ($distributors as $d): ?>
+                    <tr>
+                        <td><code><?php echo htmlspecialchars($d['id']); ?></code></td>
+                        <td><strong><?php echo htmlspecialchars($d['name']); ?></strong></td>
+                        <td><?php echo htmlspecialchars($d['email']); ?></td>
+                        <td><span class="badge-count"><?php echo htmlspecialchars($d['role']); ?></span></td>
+                        <td>
+                            <form method="POST" onsubmit="return confirm('Delete this distributor?');">
+                                <input type="hidden" name="global_action" value="delete_distributor">
+                                <input type="hidden" name="d_id" value="<?php echo htmlspecialchars($d['id']); ?>">
+                                <button type="submit" class="btn btn-danger" style="padding:4px 8px;font-size:11px;">Delete</button>
+                            </form>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    <?php endif; ?>
 
 <?php elseif ($active_tab === 'stalls'): ?>
+    <div class="pg-section-head">
+        <div>
+            <h3>Stalls</h3>
+            <p>Station logins for benefit scanning. Stall name must match the benefit name.</p>
+        </div>
+    </div>
     <?php if ($stallFlashError !== ''): ?>
-        <div style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;padding:12px 16px;border-radius:8px;margin-bottom:20px;">
+        <div class="pg-alert" style="margin-bottom:1rem;">
             <?php echo htmlspecialchars($stallFlashError); ?>
         </div>
     <?php endif; ?>
 
-    <div style="background:white;padding:20px;border-radius:8px;border:1px solid #e2e8f0;margin-bottom:25px;">
+    <div class="pg-form-panel">
         <h4>Add New Stall</h4>
-        <p style="font-size:13px;color:#64748b;margin-bottom:12px;">Stall name should match a benefit name (e.g. VIP Entry, Food Stand). Multiple stalls can share one email — each stall must have a <strong>different password</strong> (email + password identifies the stall at login).</p>
-        <form method="POST" style="display:flex;gap:15px;align-items:flex-end;flex-wrap:wrap;">
+        <p class="pg-form-hint">Example: benefit <strong>Lunch</strong> → stall named <strong>Lunch</strong>. Multiple stalls can share one email if each has a different password.</p>
+        <form method="POST" class="pg-form-grid">
             <input type="hidden" name="global_action" value="add_stall">
-            <div style="flex:1;min-width:150px;"><label>Stall Name</label><input type="text" name="s_name" required style="width:100%;padding:8px;" placeholder="VIP Entry"></div>
-            <div style="flex:1;min-width:150px;"><label>Email</label><input type="email" name="s_email" required style="width:100%;padding:8px;"></div>
-            <div style="flex:1;min-width:120px;"><label>Password</label><input type="password" name="s_password" required minlength="6" style="width:100%;padding:8px;"></div>
-            <div style="flex:1;min-width:120px;"><label>Confirm Password</label><input type="password" name="s_password_confirm" required minlength="6" style="width:100%;padding:8px;"></div>
+            <div class="pg-field"><label>Stall Name</label><input type="text" name="s_name" required placeholder="Lunch"></div>
+            <div class="pg-field"><label>Email</label><input type="email" name="s_email" required placeholder="stall@event.com"></div>
+            <div class="pg-field"><label>Password</label><input type="password" name="s_password" required minlength="6"></div>
+            <div class="pg-field"><label>Confirm Password</label><input type="password" name="s_password_confirm" required minlength="6"></div>
             <button type="submit" class="btn btn-success">Add Stall</button>
         </form>
     </div>
 
-    <table>
-        <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Created At</th><th>Actions</th></tr></thead>
-        <tbody>
-            <?php if ($stalls === []): ?>
-                <tr><td colspan="5">No stalls yet. Add one above.</td></tr>
-            <?php else: ?>
+    <?php if ($stalls === []): ?>
+        <div class="pg-empty">
+            <div class="pg-empty__icon"><i class="fa-solid fa-store"></i></div>
+            <h3>No stalls yet</h3>
+            <p>Add a stall whose name matches a benefit, then staff can log in on the terminal.</p>
+        </div>
+    <?php else: ?>
+        <table>
+            <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Created At</th><th>Actions</th></tr></thead>
+            <tbody>
                 <?php foreach ($stalls as $stall): ?>
                     <tr>
                         <td><?php echo (int) $stall['id']; ?></td>
@@ -649,21 +711,27 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
                         </td>
                     </tr>
                 <?php endforeach; ?>
-            <?php endif; ?>
-        </tbody>
-    </table>
+            </tbody>
+        </table>
+    <?php endif; ?>
 
-    <div id="reset-stall-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
-        <div style="background:white;padding:24px;border-radius:12px;max-width:400px;width:90%;">
+    <div id="reset-stall-modal" class="pg-modal-scrim" role="dialog" aria-modal="true">
+        <div class="pg-modal-card">
             <h3 id="reset-stall-title">Reset Password</h3>
-            <form method="POST" class="space-y-3" style="margin-top:16px;">
+            <form method="POST" style="margin-top:1rem;">
                 <input type="hidden" name="global_action" value="reset_stall_password">
                 <input type="hidden" name="stall_id" id="reset-stall-id" value="">
-                <div><label>New Password</label><input type="password" name="new_password" required minlength="6" style="width:100%;padding:8px;margin-top:4px;"></div>
-                <div><label>Confirm Password</label><input type="password" name="new_password_confirm" required minlength="6" style="width:100%;padding:8px;margin-top:4px;"></div>
-                <div style="display:flex;gap:10px;margin-top:16px;">
+                <div class="pg-field" style="margin-bottom:0.75rem;">
+                    <label style="display:block;margin-bottom:0.35rem;font-size:0.7rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;">New Password</label>
+                    <input type="password" name="new_password" required minlength="6" style="width:100%;box-sizing:border-box;">
+                </div>
+                <div class="pg-field" style="margin-bottom:0.75rem;">
+                    <label style="display:block;margin-bottom:0.35rem;font-size:0.7rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;">Confirm Password</label>
+                    <input type="password" name="new_password_confirm" required minlength="6" style="width:100%;box-sizing:border-box;">
+                </div>
+                <div style="display:flex;gap:0.6rem;margin-top:1rem;">
                     <button type="submit" class="btn btn-success">Update Password</button>
-                    <button type="button" class="btn" style="background:#64748b;" onclick="closeResetStallModal()">Cancel</button>
+                    <button type="button" class="btn btn-ghost" onclick="closeResetStallModal()">Cancel</button>
                 </div>
             </form>
         </div>
@@ -672,15 +740,20 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
         function openResetStallModal(id, name) {
             document.getElementById('reset-stall-id').value = id;
             document.getElementById('reset-stall-title').innerText = 'Reset Password — ' + name;
-            document.getElementById('reset-stall-modal').style.display = 'flex';
+            document.getElementById('reset-stall-modal').classList.add('is-open');
         }
         function closeResetStallModal() {
-            document.getElementById('reset-stall-modal').style.display = 'none';
+            document.getElementById('reset-stall-modal').classList.remove('is-open');
         }
     </script>
 
 <?php elseif ($active_tab === 'allocation'): ?>
-    <?php if ($is_allocation_confirm_stage):
+    <?php
+    $vaultTickets = array_values(array_filter(
+        $tickets,
+        static fn ($row) => empty($row['allocated_distributor_id']) && empty($row['customer_id'])
+    ));
+    if ($is_allocation_confirm_stage):
         $tDist = $_SESSION['alloc_target_dist'] ?? '';
         $tTkts = $_SESSION['alloc_selected_tickets'] ?? [];
         $dName = $distributorMap[$tDist]['name'] ?? 'Unknown';
@@ -692,12 +765,13 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
         }
     ?>
         <div class="confirm-window">
-            <h2>Confirm Allocation</h2>
+            <p class="pg-eyebrow" style="margin:0 0 0.35rem;">Allocation preview</p>
+            <h2 style="margin:0 0 0.75rem;">Confirm Allocation</h2>
             <p><strong>Distributor:</strong> <?php echo htmlspecialchars($dName); ?></p>
             <p><strong>Tickets:</strong> <?php echo count($tTkts); ?></p>
             <div class="scroller-box">
                 <?php foreach ($grouped as $type => $list): ?>
-                    <div class="preview-group-row">
+                    <div class="preview-group-row" style="padding:0.75rem;margin-bottom:0.55rem;">
                         <div class="preview-type-title"><?php echo htmlspecialchars($type); ?></div>
                         <div class="preview-column-grid">
                             <?php foreach ($list as $pId): ?><span class="preview-pill">#<?php echo (int) $pId; ?></span><?php endforeach; ?>
@@ -705,49 +779,72 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
                     </div>
                 <?php endforeach; ?>
             </div>
-            <form method="POST" style="display:inline;"><input type="hidden" name="global_action" value="allocate_tickets_confirm"><button type="submit" class="btn btn-success">Confirm</button></form>
-            <a href="?<?php echo adminEventQuery($eventId, 'allocation'); ?>" class="btn" style="background:#64748b;">Cancel</a>
+            <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.5rem;">
+                <form method="POST" style="display:inline;"><input type="hidden" name="global_action" value="allocate_tickets_confirm"><button type="submit" class="btn btn-success">Confirm</button></form>
+                <a href="?<?php echo adminEventQuery($eventId, 'allocation'); ?>" class="btn btn-ghost">Cancel</a>
+            </div>
         </div>
     <?php else: ?>
-        <form method="POST">
-            <input type="hidden" name="global_action" value="allocate_tickets_preview">
-            <div style="background:white;padding:20px;border-radius:8px;margin-bottom:20px;">
-                <label><strong>Select Distributor</strong></label>
-                <select name="alloc_dist_id" required style="width:100%;padding:10px;margin-top:5px;">
-                    <option value="">-- Choose --</option>
-                    <?php foreach ($distributors as $d): ?><option value="<?php echo htmlspecialchars($d['id']); ?>"><?php echo htmlspecialchars($d['name']); ?></option><?php endforeach; ?>
-                </select>
+        <div class="pg-section-head">
+            <div>
+                <h3>Allocation</h3>
+                <p>Move tickets from the Vault Pool to a distributor. Preview before confirming.</p>
             </div>
-            <div style="max-height:400px;overflow-y:scroll;border:1px solid #cbd5e1;border-radius:8px;background:white;">
-                <table style="box-shadow:none;">
-                    <thead><tr><th></th><th>Ticket ID</th><th>Physical #</th><th>Tier</th></tr></thead>
-                    <tbody>
-                        <?php foreach ($tickets as $row): ?>
-                            <?php if (empty($row['allocated_distributor_id']) && empty($row['customer_id'])): ?>
+            <span class="badge-count"><?php echo count($vaultTickets); ?> in vault</span>
+        </div>
+        <?php if ($vaultTickets === []): ?>
+            <div class="pg-empty">
+                <div class="pg-empty__icon"><i class="fa-solid fa-check"></i></div>
+                <h3>Vault fully allocated</h3>
+                <p>All tickets for this event are already assigned. Reset allocations if you need to reassign.</p>
+                <a href="?<?php echo adminEventQuery($eventId, 'ledger'); ?>" class="btn btn-primary">Open ledger</a>
+            </div>
+        <?php elseif ($distributors === []): ?>
+            <div class="pg-empty">
+                <div class="pg-empty__icon"><i class="fa-solid fa-user-plus"></i></div>
+                <h3>Add a distributor first</h3>
+                <p>You need at least one distributor before allocating vault tickets.</p>
+                <a href="?<?php echo adminEventQuery($eventId, 'distributors'); ?>" class="btn btn-primary">Add distributor</a>
+            </div>
+        <?php else: ?>
+            <form method="POST">
+                <input type="hidden" name="global_action" value="allocate_tickets_preview">
+                <div class="pg-form-panel">
+                    <h4>Select Distributor</h4>
+                    <p class="pg-form-hint">Choose who receives the tickets you select below.</p>
+                    <select name="alloc_dist_id" required style="width:100%;max-width:28rem;">
+                        <option value="">— Choose distributor —</option>
+                        <?php foreach ($distributors as $d): ?><option value="<?php echo htmlspecialchars($d['id']); ?>"><?php echo htmlspecialchars($d['name']); ?></option><?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="pg-alloc-pick">
+                    <table>
+                        <thead><tr><th></th><th>Ticket ID</th><th>Physical #</th><th>Tier</th></tr></thead>
+                        <tbody>
+                            <?php foreach ($vaultTickets as $row): ?>
                                 <tr>
                                     <td><input type="checkbox" name="selected_tickets[]" value="<?php echo htmlspecialchars($row['id']); ?>"></td>
                                     <td><code><?php echo htmlspecialchars($row['id']); ?></code></td>
                                     <td>#<?php echo (int) $row['physical_number']; ?></td>
                                     <td><?php echo htmlspecialchars($row['tier_name']); ?></td>
                                 </tr>
-                            <?php endif; ?>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-            <button type="submit" class="btn btn-primary" style="width:100%;padding:14px;margin-top:15px;">Preview Allocation</button>
-        </form>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <button type="submit" class="btn btn-primary" style="width:100%;padding:0.9rem;margin-top:1rem;">Preview Allocation</button>
+            </form>
+        <?php endif; ?>
     <?php endif; ?>
 
 <?php elseif ($active_tab === 'analytics'): ?>
-    <div class="summary-grid" style="margin-bottom:20px;">
-        <div class="summary-card" style="border-top:4px solid #16a34a;"><h3>Online Sales</h3><div class="metric" style="color:#16a34a;"><?php echo $onlineSalesCount; ?></div></div>
-        <div class="summary-card" style="border-top:4px solid #2563eb;"><h3>Distributor Allocations</h3><div class="metric" style="color:#2563eb;"><?php echo $distributorSalesCount; ?></div></div>
-        <div class="summary-card" style="border-top:4px solid #ea580c;"><h3>Vault Available</h3><div class="metric" style="color:#ea580c;"><?php echo (int) $summary['vault_available']; ?></div></div>
+    <div class="summary-grid" style="margin-bottom:1.25rem;">
+        <div class="summary-card"><h3>Online Sales</h3><div class="metric"><?php echo $onlineSalesCount; ?></div></div>
+        <div class="summary-card"><h3>Distributor Allocations</h3><div class="metric"><?php echo $distributorSalesCount; ?></div></div>
+        <div class="summary-card"><h3>Vault Available</h3><div class="metric"><?php echo (int) $summary['vault_available']; ?></div></div>
     </div>
-
     <h3>Sales by Payment Gateway</h3>
-    <table style="margin-bottom:25px;">
+    <table style="margin-bottom:1.25rem;">
         <thead><tr><th>Gateway</th><th>Tickets Sold</th><th>Revenue</th></tr></thead>
         <tbody>
             <?php if ($gatewaySales === []): ?>
@@ -763,22 +860,41 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
             <?php endif; ?>
         </tbody>
     </table>
-    <?php $filterDist = $_GET['filter_distributor'] ?? 'ALL'; ?>
-    <form method="GET" style="margin-bottom:15px;">
+    <?php
+    $filterDist = $_GET['filter_distributor'] ?? 'ALL';
+    $analyticsRows = array_values(array_filter(
+        $tickets,
+        static fn ($row) => $filterDist === 'ALL' || ($row['allocated_distributor_id'] ?? '') === $filterDist
+    ));
+    ?>
+    <div class="pg-section-head">
+        <div>
+            <h3>Analytics</h3>
+            <p>Benefit usage per ticket — filter by distributor when needed.</p>
+        </div>
+    </div>
+    <form method="GET" class="pg-filter-bar">
         <input type="hidden" name="tab" value="analytics">
         <input type="hidden" name="event_id" value="<?php echo $eventId; ?>">
-        <select name="filter_distributor" onchange="this.form.submit()">
+        <label for="filter_distributor">Distributor</label>
+        <select name="filter_distributor" id="filter_distributor" onchange="this.form.submit()">
             <option value="ALL">All distributors</option>
             <?php foreach ($distributors as $d): ?>
                 <option value="<?php echo htmlspecialchars($d['id']); ?>" <?php echo $filterDist === $d['id'] ? 'selected' : ''; ?>><?php echo htmlspecialchars($d['name']); ?></option>
             <?php endforeach; ?>
         </select>
     </form>
-    <table>
-        <thead><tr><th>Ticket</th><th>Physical #</th><th>Tier</th><th>Handler</th><th>Benefits</th></tr></thead>
-        <tbody>
-            <?php foreach ($tickets as $row): ?>
-                <?php if ($filterDist === 'ALL' || $row['allocated_distributor_id'] === $filterDist): ?>
+    <?php if ($analyticsRows === []): ?>
+        <div class="pg-empty">
+            <div class="pg-empty__icon"><i class="fa-solid fa-chart-pie"></i></div>
+            <h3>No tickets to show</h3>
+            <p>Try another distributor filter, or allocate tickets from the vault first.</p>
+        </div>
+    <?php else: ?>
+        <table>
+            <thead><tr><th>Ticket</th><th>Physical #</th><th>Tier</th><th>Handler</th><th>Benefits</th></tr></thead>
+            <tbody>
+                <?php foreach ($analyticsRows as $row): ?>
                     <?php $benefits = ticketBenefits($db, $row['id'], (int) $row['tier_id']); ?>
                     <tr>
                         <td><code><?php echo htmlspecialchars($row['id']); ?></code></td>
@@ -794,23 +910,47 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
                             <?php endif; ?>
                         </td>
                         <td>
-                            <?php foreach ($benefits as $b): ?>
-                                <div><?php echo htmlspecialchars(trim($b['name'])); ?>: [<?php echo (int) $b['used']; ?>/<?php echo (int) $b['max_uses']; ?>]</div>
-                            <?php endforeach; ?>
+                            <div class="pg-benefit-chips">
+                                <?php foreach ($benefits as $b):
+                                    $used = (int) $b['used'];
+                                    $max = (int) $b['max_uses'];
+                                    $chipClass = '';
+                                    if ($used > 0 && $used < $max) {
+                                        $chipClass = 'is-ok';
+                                    } elseif ($used >= $max && $max > 0) {
+                                        $chipClass = 'is-full';
+                                    }
+                                ?>
+                                    <span class="pg-chip <?php echo $chipClass; ?>">
+                                        <?php echo htmlspecialchars(trim($b['name'])); ?>
+                                        <?php echo $used; ?>/<?php echo $max; ?>
+                                    </span>
+                                <?php endforeach; ?>
+                            </div>
                         </td>
                     </tr>
-                <?php endif; ?>
-            <?php endforeach; ?>
-        </tbody>
-    </table>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    <?php endif; ?>
+
 <?php elseif ($active_tab === 'customers'): ?>
-    <p style="font-size:13px;color:#64748b;margin-bottom:15px;">Customers who purchased tickets online. <a href="buy.php" class="text-indigo-600">Public buy page</a></p>
-    <table>
-        <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Tickets</th><th>Joined</th></tr></thead>
-        <tbody>
-            <?php if ($customers === []): ?>
-                <tr><td colspan="5">No customers yet.</td></tr>
-            <?php else: ?>
+    <div class="pg-section-head">
+        <div>
+            <h3>Customers</h3>
+            <p>Online purchasers. <a href="buy.php">Public buy page</a></p>
+        </div>
+    </div>
+    <?php if ($customers === []): ?>
+        <div class="pg-empty">
+            <div class="pg-empty__icon"><i class="fa-solid fa-user"></i></div>
+            <h3>No customers yet</h3>
+            <p>Customers appear here after Stripe or eSewa purchases.</p>
+        </div>
+    <?php else: ?>
+        <table>
+            <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Tickets</th><th>Joined</th></tr></thead>
+            <tbody>
                 <?php foreach ($customers as $cust): ?>
                     <tr>
                         <td><?php echo (int) $cust['id']; ?></td>
@@ -820,32 +960,32 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
                         <td><?php echo htmlspecialchars(substr((string) $cust['created_at'], 0, 16)); ?></td>
                     </tr>
                 <?php endforeach; ?>
-            <?php endif; ?>
-        </tbody>
-    </table>
+            </tbody>
+        </table>
+    <?php endif; ?>
 <?php endif; ?>
 
 <!-- Benefits modal + toast (Ledger) -->
-<div id="admin-toast" class="hidden fixed top-6 inset-x-0 z-[100] flex justify-center px-4 pointer-events-none">
-    <div id="admin-toast-inner" class="flex items-center gap-3 bg-white border shadow-xl px-5 py-3 rounded-2xl max-w-sm w-full text-sm font-semibold"></div>
+<div id="admin-toast" class="pg-toast-wrap hidden">
+    <div id="admin-toast-inner" class="pg-toast is-visible" style="pointer-events:auto;"></div>
 </div>
 
-<div id="benefits-modal" class="hidden fixed inset-0 z-[90] flex items-center justify-center p-4 bg-slate-900/60">
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
-        <div class="flex items-center justify-between px-6 py-4 border-b border-slate-100">
-            <h3 class="text-lg font-bold text-slate-900">Ticket Benefits</h3>
-            <button type="button" id="benefits-modal-close" class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
+<div id="benefits-modal" class="pg-overlay hidden" style="z-index:90;">
+    <div class="pg-card" style="width:100%;max-width:40rem;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:1rem 1.25rem;border-bottom:1px solid var(--pg-border);">
+            <h3 style="margin:0;font-family:var(--pg-display);">Ticket Benefits</h3>
+            <button type="button" id="benefits-modal-close" class="pg-btn pg-btn--ghost pg-btn--sm">&times;</button>
         </div>
-        <div class="px-6 py-4 overflow-y-auto flex-1 space-y-4">
-            <div id="benefits-modal-meta" class="grid grid-cols-2 gap-3 text-sm"></div>
-            <div class="overflow-x-auto">
-                <table class="w-full text-sm border-collapse">
+        <div style="padding:1rem 1.25rem;overflow:auto;flex:1;">
+            <div id="benefits-modal-meta" style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;font-size:0.85rem;margin-bottom:1rem;"></div>
+            <div style="overflow-x:auto;">
+                <table>
                     <thead>
-                        <tr class="bg-slate-800 text-white text-left">
-                            <th class="px-3 py-2 rounded-tl-lg">Benefit</th>
-                            <th class="px-3 py-2">Max</th>
-                            <th class="px-3 py-2">Used</th>
-                            <th class="px-3 py-2 rounded-tr-lg">Action</th>
+                        <tr>
+                            <th>Benefit</th>
+                            <th>Max</th>
+                            <th>Used</th>
+                            <th>Action</th>
                         </tr>
                     </thead>
                     <tbody id="benefits-modal-body"></tbody>
@@ -865,10 +1005,9 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
         const wrap = document.getElementById('admin-toast');
         const inner = document.getElementById('admin-toast-inner');
         if (!wrap || !inner) return;
-        inner.className = 'flex items-center gap-3 border shadow-xl px-5 py-3 rounded-2xl max-w-sm w-full text-sm font-semibold '
-            + (type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                : type === 'warning' ? 'bg-amber-50 border-amber-200 text-amber-800'
-                : 'bg-rose-50 border-rose-200 text-rose-800');
+        const color = type === 'success' ? 'var(--pg-ok)' : type === 'warning' ? 'var(--pg-warn)' : 'var(--pg-deny)';
+        inner.style.borderColor = color;
+        inner.style.color = 'var(--pg-text)';
         inner.textContent = message;
         wrap.classList.remove('hidden');
         setTimeout(() => wrap.classList.add('hidden'), 3500);
@@ -880,10 +1019,10 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
         activeModalTicketId = ticket.id;
 
         document.getElementById('benefits-modal-meta').innerHTML = `
-            <div><span class="block text-[10px] uppercase font-bold text-slate-400">Ticket ID</span><span class="font-mono font-bold">${escapeHtml(ticket.id)}</span></div>
-            <div><span class="block text-[10px] uppercase font-bold text-slate-400">Physical #</span><span class="font-bold">#${ticket.physical_number}</span></div>
-            <div><span class="block text-[10px] uppercase font-bold text-slate-400">Tier</span><span class="font-semibold">${escapeHtml(ticket.tier_name || '')}</span></div>
-            <div><span class="block text-[10px] uppercase font-bold text-slate-400">Event</span><span class="font-semibold">${escapeHtml(ticket.event_name || '')}</span></div>`;
+            <div><span class="pg-section-title" style="display:block;margin-bottom:0.2rem;">Ticket ID</span><span class="pg-mono" style="font-weight:700;">${escapeHtml(ticket.id)}</span></div>
+            <div><span class="pg-section-title" style="display:block;margin-bottom:0.2rem;">Physical #</span><span style="font-weight:700;">#${ticket.physical_number}</span></div>
+            <div><span class="pg-section-title" style="display:block;margin-bottom:0.2rem;">Tier</span><span style="font-weight:600;">${escapeHtml(ticket.tier_name || '')}</span></div>
+            <div><span class="pg-section-title" style="display:block;margin-bottom:0.2rem;">Event</span><span style="font-weight:600;">${escapeHtml(ticket.event_name || '')}</span></div>`;
 
         const tbody = document.getElementById('benefits-modal-body');
         tbody.innerHTML = benefits.map(b => {
@@ -891,12 +1030,12 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
             const max = parseInt(b.max_uses, 10);
             const full = used >= max;
             const name = String(b.name).trim();
-            return `<tr class="border-b border-slate-100">
-                <td class="px-3 py-2 font-medium">${escapeHtml(name)}</td>
-                <td class="px-3 py-2 font-mono">${max}</td>
-                <td class="px-3 py-2 font-mono font-bold benefit-used-cell" data-benefit-name="${escapeAttr(name)}">${used}</td>
-                <td class="px-3 py-2">
-                    <button type="button" class="simulate-scan-btn px-3 py-1 rounded-lg text-xs font-bold text-white ${full ? 'bg-slate-300 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700'}"
+            return `<tr>
+                <td style="font-weight:600;">${escapeHtml(name)}</td>
+                <td class="pg-mono">${max}</td>
+                <td class="pg-mono" style="font-weight:700;" data-benefit-name="${escapeAttr(name)}">${used}</td>
+                <td>
+                    <button type="button" class="simulate-scan-btn btn ${full ? 'btn-ghost' : 'btn-success'}"
                         data-benefit-name="${escapeAttr(name)}" ${full ? 'disabled' : ''}>Simulate Scan</button>
                 </td>
             </tr>`;
@@ -962,5 +1101,6 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
         if (e.target.id === 'benefits-modal') document.getElementById('benefits-modal').classList.add('hidden');
     });
 </script>
+</div>
 </body>
 </html>
