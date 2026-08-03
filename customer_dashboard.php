@@ -7,17 +7,20 @@ session_start();
 require_once __DIR__ . '/includes/functions.php';
 require_once __DIR__ . '/includes/ui.php';
 
-requireCustomerAuth();
-
 $db = getDb();
 ensureCustomerSchema($db);
-$customerId = (int) $_SESSION['customer_id'];
+$customer = requireCustomerAuthValidated($db, 'customer_dashboard.php');
+$customerId = (int) $customer['id'];
 $tickets = getCustomerTicketsWithDetails($db, $customerId);
-$customerName = $_SESSION['customer_name'] ?? '';
-$customerEmail = $_SESSION['customer_email'] ?? '';
+$customerName = (string) ($customer['name'] ?? '');
+$customerEmail = (string) ($customer['email'] ?? '');
 
 $showNewBanner = isset($_GET['new']);
 $highlightTicket = trim($_GET['ticket'] ?? '');
+if ($highlightTicket !== '' && !customerOwnsTicket($db, $customerId, $highlightTicket)) {
+    auditLog('AUTH', "Customer {$customerEmail} denied highlight for ticket {$highlightTicket}");
+    $highlightTicket = '';
+}
 $hasHighlight = $highlightTicket !== '';
 ?>
 <!DOCTYPE html>
@@ -27,6 +30,10 @@ $hasHighlight = $highlightTicket !== '';
 </head>
 <body class="pg-body">
     <?php passgateRenderPublicNav('account'); ?>
+    <?php passgateRenderBreadcrumb([
+        ['label' => 'Home', 'href' => 'index.php'],
+        ['label' => 'My tickets'],
+    ]); ?>
 <div class="pg-shop-wrap">
     <div class="pg-shop-top">
         <div>
@@ -37,7 +44,9 @@ $hasHighlight = $highlightTicket !== '';
             </p>
         </div>
         <nav class="pg-shop-nav">
-            <a class="pg-btn pg-btn--ghost pg-btn--sm" href="customer_logout.php">Logout</a>
+            <a class="pg-btn pg-btn--gold pg-btn--sm" href="buy.php">Buy more</a>
+            <a class="pg-btn pg-btn--ghost pg-btn--sm" href="events.php">Events</a>
+            <a class="pg-btn pg-btn--ghost pg-btn--sm" href="customer_logout.php">Log out</a>
         </nav>
     </div>
 
@@ -155,5 +164,6 @@ function closeQrModal() {
 document.querySelector('.pg-ticket-card.is-new')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 <?php endif; ?>
 </script>
+<?php passgateRenderPublicFooter(); ?>
 </body>
 </html>

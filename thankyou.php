@@ -22,6 +22,11 @@ if ($ticketId !== '' && $isLoggedIn) {
 </head>
 <body class="pg-body">
     <?php passgateRenderPublicNav('buy'); ?>
+    <?php passgateRenderBreadcrumb([
+        ['label' => 'Home', 'href' => 'index.php'],
+        ['label' => 'Buy tickets', 'href' => 'buy.php'],
+        ['label' => 'Thank you'],
+    ]); ?>
     <div class="pg-auth-stage">
         <div class="pg-card pg-card--auth" style="text-align:center;">
             <div class="pg-brand-mark" style="margin:0 auto 0.85rem;background:linear-gradient(145deg,#34d399,#0ca678);">
@@ -44,5 +49,6 @@ if ($ticketId !== '' && $isLoggedIn) {
             </div>
         </div>
     </div>
+    <?php passgateRenderPublicFooter(); ?>
 </body>
 </html>

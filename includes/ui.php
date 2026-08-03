@@ -42,43 +42,55 @@ HTML;
 }
 
 /**
+ * Whether a verified customer session is active (session + DB check).
+ */
+function passgateHasVerifiedCustomer(): bool
+{
+    if (!function_exists('isCustomerAuthenticated') || !isCustomerAuthenticated()) {
+        return false;
+    }
+
+    try {
+        $db = getDb();
+
+        return getAuthenticatedCustomer($db) !== null;
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
+/**
  * Shared public site header.
- * Destinations: Events · Buy · Account · Staff
  *
- * @param 'home'|'events'|'buy'|'account'|'staff' $active
+ * @param 'home'|'events'|'buy'|'account'|'validate'|'staff'|'admin' $active
  */
 function passgateRenderPublicNav(string $active = 'home'): void
 {
-    $isCustomer = function_exists('isCustomerAuthenticated') && isCustomerAuthenticated();
+    $isCustomer = passgateHasVerifiedCustomer();
     $isAdmin = function_exists('isDistributorAuthenticated')
         && isDistributorAuthenticated()
         && (($_SESSION['distributor_role'] ?? '') === 'admin');
-    $isStall = function_exists('isStallAuthenticated') && isStallAuthenticated();
 
-    $link = static function (string $href, string $label, string $key, string $active, string $icon = ''): string {
-        $cls = $key === $active ? 'pg-site-nav__link is-active' : 'pg-site-nav__link';
+    $link = static function (
+        string $href,
+        string $label,
+        string $key,
+        string $active,
+        string $icon = '',
+        string $extraClass = ''
+    ): string {
+        $cls = 'pg-site-nav__link';
+        if ($key === $active) {
+            $cls .= ' is-active';
+        }
+        if ($extraClass !== '') {
+            $cls .= ' ' . $extraClass;
+        }
         $iconHtml = $icon !== '' ? '<i class="' . htmlspecialchars($icon) . '" aria-hidden="true"></i> ' : '';
-        return '<a class="' . $cls . '" href="' . htmlspecialchars($href) . '">' . $iconHtml . htmlspecialchars($label) . '</a>';
+
+        return '<a class="' . $cls . '" href="' . htmlspecialchars($href) . '">'
+            . $iconHtml . htmlspecialchars($label) . '</a>';
     };
-
-    if ($isCustomer) {
-        $accountHref = 'customer_dashboard.php';
-        $accountLabel = 'My tickets';
-    } else {
-        $accountHref = 'customer_register.php';
-        $accountLabel = 'Account';
-    }
-
-    if ($isAdmin) {
-        $staffHref = 'distributors.php';
-        $staffLabel = 'Admin';
-    } elseif ($isStall) {
-        $staffHref = 'terminal.php';
-        $staffLabel = 'Scanner';
-    } else {
-        $staffHref = 'terminal.php';
-        $staffLabel = 'Staff';
-    }
 
     echo '<header class="pg-site-nav">';
     echo '<a class="pg-site-nav__brand" href="index.php">';
@@ -86,12 +98,115 @@ function passgateRenderPublicNav(string $active = 'home'): void
     echo '<span class="pg-brand" style="font-size:1.15rem;">PassGate</span>';
     echo '</a>';
     echo '<nav class="pg-site-nav__links" aria-label="Main">';
+
+    echo $link('index.php', 'Home', 'home', $active, 'fa-solid fa-house');
     echo $link('events.php', 'Events', 'events', $active, 'fa-solid fa-calendar-days');
-    echo $link('buy.php', 'Buy', 'buy', $active);
-    echo $link($accountHref, $accountLabel, 'account', $active);
-    echo $link($staffHref, $staffLabel, 'staff', $active);
+    echo $link('buy.php', 'Buy tickets', 'buy', $active, 'fa-solid fa-cart-shopping');
+
+    echo '<span class="pg-site-nav__sep" aria-hidden="true"></span>';
+
+    if ($isCustomer) {
+        echo $link('customer_dashboard.php', 'My tickets', 'account', $active, 'fa-solid fa-qrcode');
+        echo $link('customer_logout.php', 'Log out', 'logout', $active, 'fa-solid fa-right-from-bracket', 'pg-site-nav__link--muted');
+    } else {
+        echo $link('customer_login.php?next=customer_dashboard.php', 'Log in', 'account', $active, 'fa-solid fa-right-to-bracket');
+        echo $link('customer_register.php?next=buy.php', 'Sign up', 'signup', $active, '', 'pg-site-nav__link--muted');
+    }
+
+    echo '<span class="pg-site-nav__sep" aria-hidden="true"></span>';
+
+    if ($isAdmin) {
+        echo $link('distributors.php', 'Admin dashboard', 'admin', $active, 'fa-solid fa-gauge-high');
+    } else {
+        echo $link('admin_login.php', 'Admin login', 'admin', $active, 'fa-solid fa-gauge-high');
+    }
+    echo $link('staff_login.php', 'Staff login', 'staff-login', $active, 'fa-solid fa-id-badge');
+
     echo '</nav>';
     echo '</header>';
+}
+
+/**
+ * Breadcrumb trail for nested public pages.
+ *
+ * @param list<array{label: string, href?: ?string}> $items Last item may omit href (current page).
+ */
+function passgateRenderBreadcrumb(array $items): void
+{
+    if ($items === []) {
+        return;
+    }
+
+    echo '<nav class="pg-breadcrumb" aria-label="Breadcrumb"><ol>';
+    $lastIndex = count($items) - 1;
+
+    foreach ($items as $index => $item) {
+        $label = htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8');
+        $href = $item['href'] ?? null;
+        $isCurrent = $index === $lastIndex || $href === null || $href === '';
+
+        echo '<li>';
+        if (!$isCurrent && is_string($href) && $href !== '') {
+            echo '<a href="' . htmlspecialchars($href, ENT_QUOTES, 'UTF-8') . '">' . $label . '</a>';
+        } else {
+            echo '<span aria-current="page">' . $label . '</span>';
+        }
+        echo '</li>';
+    }
+
+    echo '</ol></nav>';
+}
+
+/**
+ * Compact staff-area navigation (scanner, lookup, admin login).
+ *
+ * @param 'scanner'|'validate'|'staff-login'|'stall'|'admin-login'|'admin-token' $active
+ */
+function passgateRenderStaffNav(string $active = 'scanner'): void
+{
+    $link = static function (string $href, string $label, string $key, string $active, string $icon = ''): string {
+        $cls = $key === $active ? 'pg-staff-nav__link is-active' : 'pg-staff-nav__link';
+        $iconHtml = $icon !== '' ? '<i class="' . htmlspecialchars($icon) . '" aria-hidden="true"></i> ' : '';
+
+        return '<a class="' . $cls . '" href="' . htmlspecialchars($href) . '">' . $iconHtml . htmlspecialchars($label) . '</a>';
+    };
+
+    echo '<nav class="pg-staff-nav" aria-label="Staff">';
+    echo $link('index.php', 'Home', 'home', $active, 'fa-solid fa-house');
+    echo $link('staff_login.php', 'Staff login', 'staff-login', $active, 'fa-solid fa-id-badge');
+    echo $link('admin_login.php', 'Admin login', 'admin-login', $active, 'fa-solid fa-gauge-high');
+    echo $link('manual_login.php', 'Paste token', 'admin-token', $active, 'fa-solid fa-key');
+    echo '</nav>';
+}
+
+/**
+ * Footer links on customer-facing pages.
+ */
+function passgateRenderPublicFooter(): void
+{
+    $isCustomer = passgateHasVerifiedCustomer();
+    $isAdmin = function_exists('isDistributorAuthenticated')
+        && isDistributorAuthenticated()
+        && (($_SESSION['distributor_role'] ?? '') === 'admin');
+
+    echo '<footer class="pg-public-footer">';
+    echo '<nav class="pg-public-footer__links" aria-label="Footer">';
+    echo '<a href="index.php">Home</a>';
+    echo '<a href="events.php">Events</a>';
+    echo '<a href="buy.php">Buy tickets</a>';
+    if ($isCustomer) {
+        echo '<a href="customer_dashboard.php">My tickets</a>';
+    } else {
+        echo '<a href="customer_login.php">Log in</a>';
+    }
+    if ($isAdmin) {
+        echo '<a href="distributors.php">Admin dashboard</a>';
+    } else {
+        echo '<a href="admin_login.php">Admin login</a>';
+    }
+    echo '<a href="staff_login.php">Staff login</a>';
+    echo '</nav>';
+    echo '</footer>';
 }
 
 /**
@@ -106,6 +221,8 @@ function passgateSafeNextUrl(?string $next, string $default = 'customer_dashboar
         'customer_dashboard.php',
         'index.php',
         'thankyou.php',
+        'terminal.php',
+        'staff_login.php',
     ];
 
     if ($next === '' || !in_array($next, $allowed, true)) {

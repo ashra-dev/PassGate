@@ -50,6 +50,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <?php passgateRenderHead('PassGate – Manual Login'); ?>
 </head>
 <body class="pg-body">
+    <?php passgateRenderStaffNav('admin-token'); ?>
+    <?php passgateRenderBreadcrumb([
+        ['label' => 'Home', 'href' => 'index.php'],
+        ['label' => 'Staff', 'href' => 'terminal.php'],
+        ['label' => 'Admin token'],
+    ]); ?>
     <div class="pg-auth-stage">
         <div class="pg-card pg-card--auth">
             <div style="text-align:center;margin-bottom:1.15rem;">
@@ -95,8 +101,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </form>
 
             <p class="pg-links" style="margin-top:1rem;">
-                Need a new link? <a href="terminal.php">Request one from staff login</a>
-                · <a href="index.php">Home</a>
+                Need a new link? <a href="terminal.php">Open staff scanner</a> and choose admin / distributor login.
             </p>
         </div>
     </div>
@@ -116,5 +121,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         });
     </script>
+    <?php passgateRenderPublicFooter(); ?>
 </body>
 </html>

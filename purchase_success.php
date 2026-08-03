@@ -60,14 +60,22 @@ if ($sessionId === '') {
     <?php passgateRenderHead('PassGate – Purchase'); ?>
 </head>
 <body class="pg-body">
+    <?php passgateRenderPublicNav('buy'); ?>
+    <?php passgateRenderBreadcrumb([
+        ['label' => 'Home', 'href' => 'index.php'],
+        ['label' => 'Buy tickets', 'href' => 'buy.php'],
+        ['label' => 'Payment'],
+    ]); ?>
     <div class="pg-auth-stage">
         <div class="pg-card pg-card--auth" style="text-align:center;">
             <div class="pg-notice pg-notice--error"><?php echo htmlspecialchars($error); ?></div>
             <div style="margin-top:1rem;display:grid;gap:0.55rem;">
-                <a class="pg-btn pg-btn--gold" href="buy.php">Back to events</a>
-                <a class="pg-btn pg-btn--ghost" href="customer_login.php">Customer login</a>
+                <a class="pg-btn pg-btn--gold" href="buy.php">Back to buy tickets</a>
+                <a class="pg-btn pg-btn--ghost" href="customer_dashboard.php">My tickets</a>
+                <a class="pg-btn pg-btn--ghost" href="customer_login.php?next=customer_dashboard.php">Customer login</a>
             </div>
         </div>
     </div>
+    <?php passgateRenderPublicFooter(); ?>
 </body>
 </html>

@@ -7,12 +7,26 @@ session_start();
 require_once __DIR__ . '/includes/functions.php';
 require_once __DIR__ . '/includes/ui.php';
 
-$isCustomer = isCustomerAuthenticated();
+$isCustomer = false;
+$customerEmail = '';
+try {
+    $db = getDb();
+    ensureCustomerSchema($db);
+    $verifiedCustomer = getAuthenticatedCustomer($db);
+    if ($verifiedCustomer !== null) {
+        $isCustomer = true;
+        $customerEmail = (string) $verifiedCustomer['email'];
+    }
+} catch (Throwable $e) {
+    // DB may not be ready yet
+}
 
 $eventCount = 0;
 $buyReady = false;
 try {
-    $db = getDb();
+    if (!isset($db)) {
+        $db = getDb();
+    }
     $events = getEventsAvailableForPurchase($db);
     $buyReady = $events !== [];
     $eventCount = count($events);
@@ -39,6 +53,14 @@ if ($isCustomer) {
 </head>
 <body class="pg-body pg-landing">
     <?php passgateRenderPublicNav('home'); ?>
+
+    <?php if ($isCustomer && $customerEmail !== ''): ?>
+        <div class="pg-notice pg-notice--info" style="max-width:68rem;margin:0 auto 0;padding:0.75rem 1.25rem;">
+            Signed in as <strong><?php echo htmlspecialchars($customerEmail); ?></strong>.
+            <a href="customer_dashboard.php" style="margin-left:0.35rem;">My tickets</a>
+            · <a href="customer_logout.php">Log out</a>
+        </div>
+    <?php endif; ?>
 
     <main class="pg-landing-hero">
         <div class="pg-landing-hero__copy">
@@ -72,5 +94,6 @@ if ($isCustomer) {
             </div>
         </div>
     </main>
+    <?php passgateRenderPublicFooter(); ?>
 </body>
 </html>

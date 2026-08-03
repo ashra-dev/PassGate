@@ -37,6 +37,7 @@ if ($action === 'unlock_station') {
 
     session_regenerate_id(true);
     clearTerminalSession();
+    clearCustomerSession();
     $_SESSION['station_pin_unlocked'] = true;
     $_SESSION['pin_station_type'] = $station;
 

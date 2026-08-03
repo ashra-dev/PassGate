@@ -48,6 +48,10 @@ $goingToBuy = $next === 'buy.php';
 </head>
 <body class="pg-body">
     <?php passgateRenderPublicNav('account'); ?>
+    <?php passgateRenderBreadcrumb([
+        ['label' => 'Home', 'href' => 'index.php'],
+        ['label' => 'Log in'],
+    ]); ?>
     <div class="pg-auth-stage">
         <div class="pg-card pg-card--auth">
             <div style="text-align:center;">
@@ -90,5 +94,6 @@ $goingToBuy = $next === 'buy.php';
             </p>
         </div>
     </div>
+    <?php passgateRenderPublicFooter(); ?>
 </body>
 </html>

@@ -167,11 +167,13 @@ function getTicketDetails(PDO $db, string $ticketId): ?array
 
     $stmt = $db->prepare(
         'SELECT t.*, ti.name AS tier_name, ti.price AS tier_price,
-                e.name AS event_name, d.name AS distributor_company, d.email AS distributor_email
+                e.name AS event_name, d.name AS distributor_company, d.email AS distributor_email,
+                c.email AS customer_email, c.name AS customer_name
          FROM tickets t
          JOIN tiers ti ON ti.id = t.tier_id
          JOIN events e ON e.id = t.event_id
          LEFT JOIN distributors d ON d.id = t.allocated_distributor_id
+         LEFT JOIN customers c ON c.id = t.customer_id
          WHERE t.id = :id'
     );
     $stmt->execute(['id' => $ticketId]);
@@ -211,6 +213,70 @@ function getTicketDetails(PDO $db, string $ticketId): ?array
         'ticket'   => $ticket,
         'benefits' => $benefits,
         'scans'    => $scans,
+    ];
+}
+
+/**
+ * Read-only ticket status payload for staff terminal / API (does not record scans).
+ *
+ * @return array<string, mixed>|null
+ */
+function buildTicketStatusPayload(PDO $db, string $ticketId): ?array
+{
+    $details = getTicketDetails($db, $ticketId);
+    if ($details === null) {
+        return null;
+    }
+
+    $ticket = $details['ticket'];
+    $benefits = $details['benefits'];
+
+    $totalMax = array_sum(array_column($benefits, 'max_uses'));
+    $totalUsed = array_sum(array_column($benefits, 'used'));
+    $isFullyUsed = $totalMax > 0 && $totalUsed >= $totalMax;
+    $displayStatus = $isFullyUsed ? 'Used' : ($ticket['status'] ?? 'Active');
+
+    if (!empty($ticket['customer_email'])) {
+        $holderType = 'customer';
+        $holderLabel = (string) ($ticket['customer_name'] ?: $ticket['customer_email']);
+        $holderDetail = (string) $ticket['customer_email'];
+    } elseif (!empty($ticket['allocated_distributor_name'])) {
+        $holderType = 'distributor';
+        $holderLabel = (string) $ticket['allocated_distributor_name'];
+        $holderDetail = (string) ($ticket['distributor_company'] ?? $holderLabel);
+    } elseif (!empty($ticket['distributor_company'])) {
+        $holderType = 'distributor';
+        $holderLabel = (string) $ticket['distributor_company'];
+        $holderDetail = (string) ($ticket['distributor_email'] ?? '');
+    } else {
+        $holderType = 'vault';
+        $holderLabel = 'Vault pool';
+        $holderDetail = '';
+    }
+
+    $benefitRows = [];
+    foreach ($benefits as $benefit) {
+        $used = (int) $benefit['used'];
+        $max = (int) $benefit['max_uses'];
+        $benefitRows[] = [
+            'name'      => trim((string) $benefit['name']),
+            'used'      => $used,
+            'max'       => $max,
+            'remaining' => max(0, $max - $used),
+            'last_scan' => $benefit['last_scan'] ?? null,
+        ];
+    }
+
+    return [
+        'ticket_id'       => (string) $ticket['id'],
+        'event'           => (string) ($ticket['event_name'] ?? ''),
+        'tier'            => (string) ($ticket['tier_name'] ?? ''),
+        'physical_number' => (int) ($ticket['physical_number'] ?? 0),
+        'status'          => $displayStatus,
+        'holder_type'     => $holderType,
+        'holder_label'    => $holderLabel,
+        'holder_detail'   => $holderDetail,
+        'benefits'        => $benefitRows,
     ];
 }
 
@@ -598,6 +664,7 @@ function completeMagicLinkLogin(PDO $db, string $email, string $token): array
 
     if ($record) {
         session_regenerate_id(true);
+        clearCustomerSession();
 
         $_SESSION['distributor_authenticated'] = true;
         $_SESSION['distributor_email'] = $record['email'];
@@ -770,6 +837,7 @@ function authenticateStall(PDO $db, string $email, string $password): ?array
 function establishStallSession(array $stall): void
 {
     session_regenerate_id(true);
+    clearCustomerSession();
     $_SESSION['stall_authenticated'] = true;
     $_SESSION['stall_id'] = (int) $stall['id'];
     $_SESSION['stall_name'] = (string) $stall['name'];
@@ -916,33 +984,11 @@ function resolveScanAuthContext(string $requestedStation): array
         ];
     }
 
-    if (!empty($_SESSION['station_pin_unlocked'])) {
-        $station = trim($requestedStation);
-        if ($station === '') {
-            $station = (string) ($_SESSION['pin_station_type'] ?? '');
-        }
-
-        if ($station === '') {
-            return [
-                'allowed' => false,
-                'station' => '',
-                'stall_id' => null,
-                'message' => 'station is required.',
-            ];
-        }
-
-        return [
-            'allowed'  => true,
-            'station'  => $station,
-            'stall_id' => null,
-        ];
-    }
-
     return [
         'allowed'  => false,
         'station'  => '',
         'stall_id' => null,
-        'message'  => 'Terminal not authenticated. Please log in as a stall.',
+        'message'  => 'Stall login required to scan.',
     ];
 }
 
@@ -1141,11 +1187,92 @@ function isCustomerAuthenticated(): bool
         && isset($_SESSION['customer_id']);
 }
 
-function requireCustomerAuth(): void
+function requireCustomerAuth(?string $next = null): void
 {
     if (!isCustomerAuthenticated()) {
-        safeRedirect('customer_login.php');
+        $target = 'customer_login.php';
+        if ($next !== null && $next !== '') {
+            $target .= '?next=' . urlencode($next);
+        }
+        safeRedirect($target);
     }
+}
+
+/**
+ * Load the logged-in customer from the database and verify the session is still valid.
+ *
+ * @return array<string, mixed>|null
+ */
+function getAuthenticatedCustomer(PDO $db): ?array
+{
+    if (!isCustomerAuthenticated()) {
+        return null;
+    }
+
+    ensureCustomerSchema($db);
+
+    $customerId = (int) $_SESSION['customer_id'];
+    if ($customerId <= 0) {
+        clearCustomerSession();
+
+        return null;
+    }
+
+    $stmt = $db->prepare('SELECT id, email, name FROM customers WHERE id = :id');
+    $stmt->execute(['id' => $customerId]);
+    $customer = $stmt->fetch();
+
+    if ($customer === false) {
+        clearCustomerSession();
+
+        return null;
+    }
+
+    $sessionEmail = strtolower(trim((string) ($_SESSION['customer_email'] ?? '')));
+    $dbEmail = strtolower(trim((string) $customer['email']));
+    if ($sessionEmail !== '' && $sessionEmail !== $dbEmail) {
+        auditLog('AUTH', "Customer session email mismatch for id {$customerId}");
+        clearCustomerSession();
+
+        return null;
+    }
+
+    return $customer;
+}
+
+function customerOwnsTicket(PDO $db, int $customerId, string $ticketId): bool
+{
+    ensureCustomerSchema($db);
+    $ticketId = trim($ticketId);
+    if ($ticketId === '' || $customerId <= 0) {
+        return false;
+    }
+
+    $stmt = $db->prepare(
+        'SELECT 1 FROM customer_tickets
+         WHERE customer_id = :customer_id AND ticket_id = :ticket_id'
+    );
+    $stmt->execute(['customer_id' => $customerId, 'ticket_id' => $ticketId]);
+
+    return $stmt->fetch() !== false;
+}
+
+/**
+ * Require a valid customer session backed by the database.
+ *
+ * @return array<string, mixed>
+ */
+function requireCustomerAuthValidated(PDO $db, ?string $next = null): array
+{
+    requireCustomerAuth($next);
+
+    $customer = getAuthenticatedCustomer($db);
+    if ($customer === null) {
+        $target = 'customer_login.php?next=' . urlencode($next ?? 'customer_dashboard.php');
+        safeRedirect($target);
+    }
+
+    return $customer;
 }
 
 /**
@@ -1219,6 +1346,9 @@ function authenticateCustomer(PDO $db, string $email, string $password): ?array
 function establishCustomerSession(array $customer): void
 {
     session_regenerate_id(true);
+    clearTerminalSession();
+    clearDistributorSession();
+    clearCustomerSession();
     $_SESSION['customer_authenticated'] = true;
     $_SESSION['customer_id'] = (int) $customer['id'];
     $_SESSION['customer_email'] = (string) $customer['email'];
@@ -1232,6 +1362,16 @@ function clearCustomerSession(): void
         $_SESSION['customer_id'],
         $_SESSION['customer_email'],
         $_SESSION['customer_name']
+    );
+}
+
+function clearDistributorSession(): void
+{
+    unset(
+        $_SESSION['distributor_authenticated'],
+        $_SESSION['distributor_email'],
+        $_SESSION['distributor_role'],
+        $_SESSION['distributor_id']
     );
 }
 

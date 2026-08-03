@@ -36,7 +36,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <?php passgateRenderHead('PassGate – Check ticket status'); ?>
 </head>
 <body class="pg-body">
-<div class="pg-auth-stage" style="align-items:flex-start;padding-top:2.5rem;">
+    <?php passgateRenderPublicNav('validate'); ?>
+    <?php passgateRenderStaffNav('validate'); ?>
+    <?php passgateRenderBreadcrumb([
+        ['label' => 'Home', 'href' => 'index.php'],
+        ['label' => 'Check ticket'],
+    ]); ?>
+<div class="pg-auth-stage" style="align-items:flex-start;padding-top:1rem;">
     <div style="width:100%;max-width:28rem;">
         <div style="text-align:center;margin-bottom:1.25rem;">
             <div class="pg-brand-mark" style="margin:0 auto 0.75rem;font-size:1.15rem;">
@@ -139,12 +145,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
             </div>
         <?php endif; ?>
-
-        <p class="pg-links" style="margin-top:1.25rem;">
-            <a href="terminal.php">Back to scanner</a>
-            · <a href="index.php">Home</a>
-        </p>
     </div>
 </div>
+<?php passgateRenderPublicFooter(); ?>
 </body>
 </html>

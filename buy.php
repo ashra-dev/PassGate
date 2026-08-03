@@ -10,14 +10,18 @@ require_once __DIR__ . '/includes/ui.php';
 $db = getDb();
 ensureCustomerSchema($db);
 
-// Must have an account before buying — tickets are tied to that customer.
 if (!isCustomerAuthenticated()) {
-    safeRedirect('customer_register.php?next=buy.php');
+    safeRedirect('customer_login.php?next=buy.php');
+}
+
+$customer = getAuthenticatedCustomer($db);
+if ($customer === null) {
+    safeRedirect('customer_login.php?next=buy.php');
 }
 
 $events = getEventsAvailableForPurchase($db);
 $isLoggedIn = true;
-$customerEmail = (string) ($_SESSION['customer_email'] ?? '');
+$customerEmail = (string) $customer['email'];
 $error = $_GET['error'] ?? '';
 $cancelled = isset($_GET['cancel']);
 $stripeConfigured = getStripeClient() !== null;
@@ -32,6 +36,10 @@ $anyGateway = $stripeConfigured || $esewaConfigured || $devCheckout;
 </head>
 <body class="pg-body">
     <?php passgateRenderPublicNav('buy'); ?>
+    <?php passgateRenderBreadcrumb([
+        ['label' => 'Home', 'href' => 'index.php'],
+        ['label' => 'Buy tickets'],
+    ]); ?>
 <div class="pg-shop-wrap">
     <div class="pg-shop-top">
         <div>
@@ -41,6 +49,10 @@ $anyGateway = $stripeConfigured || $esewaConfigured || $devCheckout;
                 Signed in as <strong><?php echo htmlspecialchars($customerEmail); ?></strong> — tickets go to this account.
             </p>
         </div>
+        <nav class="pg-shop-nav">
+            <a class="pg-btn pg-btn--ghost pg-btn--sm" href="events.php">Browse events</a>
+            <a class="pg-btn pg-btn--ghost pg-btn--sm" href="customer_dashboard.php">My tickets</a>
+        </nav>
     </div>
 
     <?php if ($error !== ''): ?>
@@ -133,7 +145,7 @@ $anyGateway = $stripeConfigured || $esewaConfigured || $devCheckout;
         <?php endforeach; ?>
     <?php endif; ?>
 </div>
-
+<?php passgateRenderPublicFooter(); ?>
 <script>
 function submitEsewaForm(payload) {
   const form = document.createElement('form');
