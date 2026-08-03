@@ -59,7 +59,7 @@ function sendSmtpEmail(
         }
 
         $from = env('MAIL_FROM', 'noreply@passgate.local');
-        $fromName = env('MAIL_FROM_NAME', 'PassGate Pro');
+        $fromName = env('MAIL_FROM_NAME', 'PassGate');
 
         $mail->setFrom($from, $fromName);
         $mail->addAddress($to);

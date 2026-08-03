@@ -1,0 +1,62 @@
+﻿📖PassGate: Official System Manual
+1. Introduction
+PassGate is the official access and inventory portal for TIIKII-enabled events. This system provides a unified, secure way to track ticket custody, manage distributor inventory, and process benefit consumption at event stations.
+2. Guide for: Distributor Admin (The Event Manager)
+As the Event Manager, you are the architect of the event’s digital structure and the overseer of the supply chain.
+System Initialization:
+Navigate to the setup portal. Input your event parameters, including ticket tiers and benefit allowances.
+Once initialized, the system creates the "Vault Pool"—the central repository from which all tickets originate.
+Managing Distributors:
+Use the Directory tab to register partner companies using their official email addresses. This registration grants them secure access to their own dedicated inventory portal.
+Inventory Allocation:
+Utilize the Serial Allocation Matrix to transfer ticket custody. By selecting specific ticket ranges (e.g., #100–#200), you assign those assets to a specific distributor, moving them out of the "Vault Pool."
+System Monitoring:
+Consult Admin Analytics to track performance and inventory movement.
+Review the Benefit Scan Logs to audit usage and ensure all scans are occurring at the correct terminals.
+3. Guide for: Distributors (The Asset Handlers)
+Your role is to manage the inventory entrusted to your company and ensure your staff is prepared for the event.
+Secure Access:
+Login at the portal using your registered company email. You will receive a unique One-Time Password (OTP) via email; enter this to proceed.
+Dashboard & Oversight:
+Your dashboard provides a focused view of only the inventory assigned to your company. You cannot modify event settings or view the data of other distributors.
+Inventory Management:
+Regularly monitor your assigned tickets. Ensure that the inventory in your custody matches your physical records.
+Benefit Tracking:
+If your company manages specific benefit stations, ensure your on-site staff is trained to scan tickets accurately to track consumption in real-time.
+4. Guide for: Station Users (The Gatekeepers)
+You are the "boots on the ground" responsible for processing ticket holder entries and benefit redemptions.
+The Scanning Interface:
+When a guest presents their ticket, use the Authentication Terminal. You may use a scanner to read the barcode or the manual entry method if the ticket is damaged.
+Interpreting Results:
+Green: Access Granted. You may proceed with fulfilling the benefit.
+Yellow: Benefit limit reached or already claimed. Redirect the guest to an Admin for verification.
+Red: Access Denied. The ticket may be invalid or not authorized for this specific station.
+Operational Integrity:
+Remember that the system is synchronized globally. Once a benefit is scanned as "used" at your station, it is updated instantly across the entire system.
+Maintenance: Keep your terminal powered and connected. In the event of a technical failure, report it immediately to your Distributor representative.
+Quick Reference: Operational Rules
+Feature
+Distributor Admin
+Distributor
+Station User
+Configure Event
+✅
+❌
+❌
+Allocate Tickets
+✅
+❌
+❌
+View Inventory
+✅
+✅
+✅
+Scan/Redeem Benefits
+❌
+❌
+✅
+Security Note: Always Logout when leaving a terminal.
+Case Sensitivity: Ensure all email entries match the registry exactly.
+Permanence: Scans are recorded in real-time and are permanent; there is no "undo" button for a completed benefit redemption.
+
+
