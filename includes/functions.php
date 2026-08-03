@@ -363,6 +363,11 @@ function getAllEventsWithStats(PDO $db): array
     $stmt = $db->query(
         'SELECT e.id, e.name, e.created_at,
                 COUNT(DISTINCT t.id) AS ticket_count,
+                COUNT(DISTINCT t.id) FILTER (
+                    WHERE t.customer_id IS NULL
+                      AND (t.allocated_distributor_id IS NULL OR t.allocated_distributor_id = \'\')
+                ) AS vault_available,
+                COUNT(DISTINCT t.id) FILTER (WHERE t.customer_id IS NOT NULL) AS sold_online,
                 COUNT(DISTINCT s.id) AS scan_count
          FROM events e
          LEFT JOIN tickets t ON t.event_id = e.id
@@ -372,6 +377,40 @@ function getAllEventsWithStats(PDO $db): array
     );
 
     return $stmt->fetchAll();
+}
+
+/**
+ * Ticket inventory breakdown for an event (admin dashboard).
+ *
+ * @return array{total: int, vault_available: int, allocated: int, sold_online: int}
+ */
+function getEventTicketSummary(PDO $db, int $eventId): array
+{
+    ensureCustomerSchema($db);
+
+    $stmt = $db->prepare(
+        "SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (
+                WHERE customer_id IS NULL
+                  AND (allocated_distributor_id IS NULL OR allocated_distributor_id = '')
+            ) AS vault_available,
+            COUNT(*) FILTER (
+                WHERE customer_id IS NULL
+                  AND allocated_distributor_id IS NOT NULL AND allocated_distributor_id <> ''
+            ) AS allocated,
+            COUNT(*) FILTER (WHERE customer_id IS NOT NULL) AS sold_online
+         FROM tickets WHERE event_id = :event_id"
+    );
+    $stmt->execute(['event_id' => $eventId]);
+    $row = $stmt->fetch() ?: [];
+
+    return [
+        'total'           => (int) ($row['total'] ?? 0),
+        'vault_available' => (int) ($row['vault_available'] ?? 0),
+        'allocated'       => (int) ($row['allocated'] ?? 0),
+        'sold_online'     => (int) ($row['sold_online'] ?? 0),
+    ];
 }
 
 /**
@@ -976,6 +1015,501 @@ function sendMagicLinkEmail(string $email, string $token): bool
 
     if (!$result['success']) {
         auditLog('MAIL', "SMTP send failed for {$email}: {$result['error']}");
+    }
+
+    return $result['success'];
+}
+
+// ---------------------------------------------------------------------------
+// Customer accounts & online ticket sales
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply customers / customer_tickets tables and ticket purchase columns.
+ */
+function ensureCustomerSchema(PDO $db): void
+{
+    $db->exec(
+        'CREATE TABLE IF NOT EXISTS customers (
+            id            SERIAL PRIMARY KEY,
+            email         VARCHAR(255) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            name          VARCHAR(255) DEFAULT \'\',
+            created_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )'
+    );
+
+    $colCheck = $db->prepare(
+        "SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'tickets'
+           AND column_name IN ('customer_id', 'purchased_at')"
+    );
+    $colCheck->execute();
+    $cols = $colCheck->fetchAll(PDO::FETCH_COLUMN);
+
+    if (!in_array('customer_id', $cols, true)) {
+        $db->exec(
+            'ALTER TABLE tickets ADD COLUMN customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL'
+        );
+    }
+    if (!in_array('purchased_at', $cols, true)) {
+        $db->exec('ALTER TABLE tickets ADD COLUMN purchased_at TIMESTAMPTZ');
+    }
+
+    $db->exec(
+        'CREATE TABLE IF NOT EXISTS customer_tickets (
+            id           SERIAL PRIMARY KEY,
+            customer_id  INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+            ticket_id    VARCHAR(100) NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+            purchased_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            payment_id   VARCHAR(255) DEFAULT \'\',
+            UNIQUE (ticket_id)
+        )'
+    );
+
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_tickets_customer_id ON tickets (customer_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_customers_email ON customers (email)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_customer_tickets_customer ON customer_tickets (customer_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_customer_tickets_ticket ON customer_tickets (ticket_id)');
+}
+
+function isCustomerAuthenticated(): bool
+{
+    return isset($_SESSION['customer_authenticated'])
+        && $_SESSION['customer_authenticated'] === true
+        && isset($_SESSION['customer_id']);
+}
+
+function requireCustomerAuth(): void
+{
+    if (!isCustomerAuthenticated()) {
+        safeRedirect('customer_login.php');
+    }
+}
+
+/**
+ * @return array<string, mixed>|null
+ */
+function getCustomerByEmail(PDO $db, string $email): ?array
+{
+    ensureCustomerSchema($db);
+    $stmt = $db->prepare('SELECT * FROM customers WHERE LOWER(email) = :email');
+    $stmt->execute(['email' => strtolower(trim($email))]);
+
+    $row = $stmt->fetch();
+
+    return $row ?: null;
+}
+
+/**
+ * Register or claim a guest account created during checkout (updates password).
+ *
+ * @throws InvalidArgumentException
+ */
+function registerCustomer(PDO $db, string $name, string $email, string $password): int
+{
+    ensureCustomerSchema($db);
+
+    $name = trim($name);
+    $email = strtolower(trim($email));
+
+    if ($name === '' || $email === '' || $password === '') {
+        throw new InvalidArgumentException('Name, email, and password are required.');
+    }
+
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        throw new InvalidArgumentException('Invalid email address.');
+    }
+
+    $existing = getCustomerByEmail($db, $email);
+    $hash = password_hash($password, PASSWORD_DEFAULT);
+
+    if ($existing !== null) {
+        // Guest checkout may have created a stub customer — allow setting a password.
+        $stmt = $db->prepare(
+            'UPDATE customers SET name = :name, password_hash = :hash, updated_at = NOW() WHERE id = :id'
+        );
+        $stmt->execute(['name' => $name, 'hash' => $hash, 'id' => $existing['id']]);
+
+        return (int) $existing['id'];
+    }
+
+    $stmt = $db->prepare(
+        'INSERT INTO customers (name, email, password_hash) VALUES (:name, :email, :hash) RETURNING id'
+    );
+    $stmt->execute(['name' => $name, 'email' => $email, 'hash' => $hash]);
+
+    return (int) $stmt->fetchColumn();
+}
+
+/**
+ * @return array<string, mixed>|null
+ */
+function authenticateCustomer(PDO $db, string $email, string $password): ?array
+{
+    $customer = getCustomerByEmail($db, $email);
+    if ($customer === null || !password_verify($password, $customer['password_hash'])) {
+        return null;
+    }
+
+    return $customer;
+}
+
+function establishCustomerSession(array $customer): void
+{
+    session_regenerate_id(true);
+    $_SESSION['customer_authenticated'] = true;
+    $_SESSION['customer_id'] = (int) $customer['id'];
+    $_SESSION['customer_email'] = (string) $customer['email'];
+    $_SESSION['customer_name'] = (string) ($customer['name'] ?? '');
+}
+
+function clearCustomerSession(): void
+{
+    unset(
+        $_SESSION['customer_authenticated'],
+        $_SESSION['customer_id'],
+        $_SESSION['customer_email'],
+        $_SESSION['customer_name']
+    );
+}
+
+/**
+ * Tickets available for public online purchase (vault pool, not yet sold).
+ */
+function countAvailableTicketsForTier(PDO $db, int $tierId, int $eventId): int
+{
+    $stmt = $db->prepare(
+        "SELECT COUNT(*) FROM tickets
+         WHERE tier_id = :tier_id AND event_id = :event_id
+           AND customer_id IS NULL AND status = 'Active'
+           AND (allocated_distributor_id IS NULL OR allocated_distributor_id = '')"
+    );
+    $stmt->execute(['tier_id' => $tierId, 'event_id' => $eventId]);
+
+    return (int) $stmt->fetchColumn();
+}
+
+/**
+ * Events with at least one purchasable ticket for the public buy page.
+ *
+ * @return array<int, array<string, mixed>>
+ */
+function getEventsAvailableForPurchase(PDO $db): array
+{
+    ensureCustomerSchema($db);
+
+    $eventsStmt = $db->query(
+        "SELECT DISTINCT e.id, e.name, e.created_at
+         FROM events e
+         JOIN tickets t ON t.event_id = e.id
+         WHERE t.customer_id IS NULL AND t.status = 'Active'
+           AND (t.allocated_distributor_id IS NULL OR t.allocated_distributor_id = '')
+         ORDER BY e.created_at DESC"
+    );
+
+    $events = [];
+    foreach ($eventsStmt->fetchAll() as $event) {
+        $eventId = (int) $event['id'];
+        $tiersStmt = $db->prepare(
+            'SELECT ti.* FROM tiers ti WHERE ti.event_id = :event_id ORDER BY ti.price ASC'
+        );
+        $tiersStmt->execute(['event_id' => $eventId]);
+
+        $tiers = [];
+        foreach ($tiersStmt->fetchAll() as $tier) {
+            $tierId = (int) $tier['id'];
+            $available = countAvailableTicketsForTier($db, $tierId, $eventId);
+            if ($available <= 0) {
+                continue;
+            }
+
+            $benefitsStmt = $db->prepare('SELECT name, max_uses FROM benefits WHERE tier_id = :tier_id ORDER BY name');
+            $benefitsStmt->execute(['tier_id' => $tierId]);
+
+            $tiers[] = [
+                'id'        => $tierId,
+                'name'      => $tier['name'],
+                'price'     => (float) $tier['price'],
+                'available' => $available,
+                'benefits'  => $benefitsStmt->fetchAll(),
+            ];
+        }
+
+        if ($tiers !== []) {
+            $events[] = [
+                'id'    => $eventId,
+                'name'  => $event['name'],
+                'tiers' => $tiers,
+            ];
+        }
+    }
+
+    return $events;
+}
+
+/**
+ * Find or create a customer record for checkout / webhook fulfillment.
+ */
+function getOrCreateCustomerForPurchase(PDO $db, string $email, string $name = ''): int
+{
+    $email = strtolower(trim($email));
+    $existing = getCustomerByEmail($db, $email);
+
+    if ($existing !== null) {
+        return (int) $existing['id'];
+    }
+
+    $stmt = $db->prepare(
+        'INSERT INTO customers (name, email, password_hash) VALUES (:name, :email, :hash) RETURNING id'
+    );
+    $stmt->execute([
+        'name'  => $name !== '' ? $name : explode('@', $email)[0],
+        'email' => $email,
+        'hash'  => password_hash(bin2hex(random_bytes(16)), PASSWORD_DEFAULT),
+    ]);
+
+    return (int) $stmt->fetchColumn();
+}
+
+/**
+ * Assign a vault-pool ticket to a customer after successful payment.
+ *
+ * @return array{success: bool, ticket_id: ?string, message: string}
+ */
+function fulfillOnlineTicketPurchase(
+    PDO $db,
+    int $eventId,
+    int $tierId,
+    string $customerEmail,
+    string $paymentId
+): array {
+    ensureCustomerSchema($db);
+
+    // Idempotent – webhook and success page may both call this
+    $existingStmt = $db->prepare(
+        'SELECT ct.ticket_id, c.email
+         FROM customer_tickets ct
+         JOIN customers c ON c.id = ct.customer_id
+         WHERE ct.payment_id = :payment_id'
+    );
+    $existingStmt->execute(['payment_id' => $paymentId]);
+    $existing = $existingStmt->fetch();
+    if ($existing !== false) {
+        return [
+            'success'   => true,
+            'ticket_id' => (string) $existing['ticket_id'],
+            'message'   => 'Already fulfilled.',
+            'email'     => (string) $existing['email'],
+        ];
+    }
+
+    $db->beginTransaction();
+
+    try {
+        $ticketStmt = $db->prepare(
+            "SELECT id FROM tickets
+             WHERE event_id = :event_id AND tier_id = :tier_id
+               AND customer_id IS NULL AND status = 'Active'
+               AND (allocated_distributor_id IS NULL OR allocated_distributor_id = '')
+             ORDER BY physical_number ASC
+             LIMIT 1
+             FOR UPDATE"
+        );
+        $ticketStmt->execute(['event_id' => $eventId, 'tier_id' => $tierId]);
+        $ticketId = $ticketStmt->fetchColumn();
+
+        if ($ticketId === false) {
+            $db->rollBack();
+            auditLog('SALE', "No tickets left for event {$eventId} tier {$tierId} (payment {$paymentId})");
+
+            return ['success' => false, 'ticket_id' => null, 'message' => 'No tickets available.'];
+        }
+
+        $customerId = getOrCreateCustomerForPurchase($db, $customerEmail);
+
+        $update = $db->prepare(
+            "UPDATE tickets SET
+                customer_id = :customer_id,
+                purchased_at = NOW(),
+                allocated_distributor_id = NULL,
+                allocated_distributor_name = 'Online Sale'
+             WHERE id = :ticket_id"
+        );
+        $update->execute(['customer_id' => $customerId, 'ticket_id' => $ticketId]);
+
+        $link = $db->prepare(
+            'INSERT INTO customer_tickets (customer_id, ticket_id, payment_id)
+             VALUES (:customer_id, :ticket_id, :payment_id)'
+        );
+        $link->execute([
+            'customer_id' => $customerId,
+            'ticket_id'   => $ticketId,
+            'payment_id'  => $paymentId,
+        ]);
+
+        $db->commit();
+
+        auditLog('SALE', "Ticket {$ticketId} sold online to {$customerEmail} (payment {$paymentId})");
+
+        return ['success' => true, 'ticket_id' => (string) $ticketId, 'message' => 'Ticket assigned.', 'email' => $customerEmail];
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        auditLog('SALE', 'Fulfillment error: ' . $e->getMessage());
+
+        return ['success' => false, 'ticket_id' => null, 'message' => $e->getMessage(), 'email' => $customerEmail];
+    }
+}
+
+/**
+ * Fulfill a Stripe Checkout session (used by webhook and purchase success page).
+ *
+ * @return array{success: bool, ticket_id: ?string, message: string, email: string, event_name?: string, tier_name?: string}
+ */
+function fulfillStripeCheckoutSession(PDO $db, object $session): array
+{
+    $eventId = (int) ($session->metadata['event_id'] ?? 0);
+    $tierId = (int) ($session->metadata['tier_id'] ?? 0);
+    $email = strtolower(trim($session->metadata['email'] ?? $session->customer_email ?? ''));
+
+    if ($eventId <= 0 || $tierId <= 0) {
+        $ref = (string) ($session->client_reference_id ?? '');
+        if (str_contains($ref, ':')) {
+            [$eventId, $tierId] = array_map('intval', explode(':', $ref, 2));
+        }
+    }
+
+    if ($eventId <= 0 || $tierId <= 0 || $email === '') {
+        return ['success' => false, 'ticket_id' => null, 'message' => 'Missing checkout metadata.', 'email' => ''];
+    }
+
+    $result = fulfillOnlineTicketPurchase($db, $eventId, $tierId, $email, (string) $session->id);
+    $result['email'] = $email;
+
+    if ($result['success']) {
+        $tierStmt = $db->prepare(
+            'SELECT ti.name AS tier_name, e.name AS event_name FROM tiers ti JOIN events e ON e.id = ti.event_id
+             WHERE ti.id = :tier_id'
+        );
+        $tierStmt->execute(['tier_id' => $tierId]);
+        $meta = $tierStmt->fetch();
+        if ($meta) {
+            $result['event_name'] = (string) $meta['event_name'];
+            $result['tier_name'] = (string) $meta['tier_name'];
+        }
+    }
+
+    return $result;
+}
+
+/**
+ * @return array<int, array<string, mixed>>
+ */
+function getCustomerTicketsWithDetails(PDO $db, int $customerId): array
+{
+    ensureCustomerSchema($db);
+
+    $stmt = $db->prepare(
+        'SELECT t.id, t.physical_number, t.purchased_at, t.status,
+                e.name AS event_name, ti.name AS tier_name, ct.payment_id
+         FROM customer_tickets ct
+         JOIN tickets t ON t.id = ct.ticket_id
+         JOIN events e ON e.id = t.event_id
+         JOIN tiers ti ON ti.id = t.tier_id
+         WHERE ct.customer_id = :customer_id
+         ORDER BY ct.purchased_at DESC'
+    );
+    $stmt->execute(['customer_id' => $customerId]);
+    $rows = $stmt->fetchAll();
+
+    foreach ($rows as &$row) {
+        $details = getTicketDetails($db, $row['id']);
+        $row['benefits'] = $details['benefits'] ?? [];
+    }
+    unset($row);
+
+    return $rows;
+}
+
+/**
+ * @return array<int, array<string, mixed>>
+ */
+function getAllCustomersWithStats(PDO $db): array
+{
+    ensureCustomerSchema($db);
+
+    return $db->query(
+        'SELECT c.id, c.name, c.email, c.created_at,
+                COUNT(ct.id) AS ticket_count
+         FROM customers c
+         LEFT JOIN customer_tickets ct ON ct.customer_id = c.id
+         GROUP BY c.id, c.name, c.email, c.created_at
+         ORDER BY c.created_at DESC'
+    )->fetchAll();
+}
+
+function getStripeCurrency(): string
+{
+    return strtolower(env('STRIPE_CURRENCY', 'npr') ?? 'npr');
+}
+
+/**
+ * @return \Stripe\StripeClient|null
+ */
+function getStripeClient(): ?\Stripe\StripeClient
+{
+    $secret = trim(env('STRIPE_SECRET_KEY', '') ?? '');
+    if ($secret === '' || str_contains($secret, '...') || !str_starts_with($secret, 'sk_')) {
+        return null;
+    }
+
+    require_once __DIR__ . '/../vendor/autoload.php';
+
+    return new \Stripe\StripeClient($secret);
+}
+
+/**
+ * Send ticket QR email after online purchase.
+ */
+function sendTicketPurchaseEmail(string $email, string $ticketId, string $eventName, string $tierName): bool
+{
+    require_once __DIR__ . '/mailer.php';
+
+    $appUrl = rtrim(env('APP_URL', 'http://localhost:8000'), '/');
+    $qrUrl = $appUrl . '/qr.php?id=' . urlencode($ticketId);
+    $loginUrl = $appUrl . '/customer_login.php';
+    $registerUrl = $appUrl . '/customer_register.php';
+    $dashboardUrl = $appUrl . '/customer_dashboard.php';
+
+    $subject = "Your PassGate ticket – {$eventName}";
+    $textBody = "Thank you for your purchase!\n\n"
+        . "Event: {$eventName}\nTier: {$tierName}\nTicket ID: {$ticketId}\n\n"
+        . "View your QR code: {$qrUrl}\n\n"
+        . "Create an account to manage tickets: {$registerUrl}\n"
+        . "Already registered? Log in: {$loginUrl}\n";
+    $htmlBody = '<p>Thank you for your purchase!</p>'
+        . '<p><strong>Event:</strong> ' . htmlspecialchars($eventName) . '<br>'
+        . '<strong>Tier:</strong> ' . htmlspecialchars($tierName) . '<br>'
+        . '<strong>Ticket ID:</strong> <code>' . htmlspecialchars($ticketId) . '</code></p>'
+        . '<p><a href="' . htmlspecialchars($qrUrl, ENT_QUOTES, 'UTF-8') . '">View QR code</a></p>'
+        . '<p><img src="' . htmlspecialchars($qrUrl, ENT_QUOTES, 'UTF-8') . '" alt="Ticket QR" width="200" height="200"></p>'
+        . '<p><a href="' . htmlspecialchars($registerUrl, ENT_QUOTES, 'UTF-8') . '">Create account</a> · '
+        . '<a href="' . htmlspecialchars($loginUrl, ENT_QUOTES, 'UTF-8') . '">Log in</a> · '
+        . '<a href="' . htmlspecialchars($dashboardUrl, ENT_QUOTES, 'UTF-8') . '">Dashboard</a></p>';
+
+    if (shouldUseDevMailFallback()) {
+        writeDevLoginLink($email, "TICKET {$ticketId}\nQR: {$qrUrl}\nLogin: {$loginUrl}");
+
+        return true;
+    }
+
+    $result = sendSmtpEmail($email, $subject, $textBody, $htmlBody);
+
+    if (!$result['success']) {
+        auditLog('MAIL', "Ticket email failed for {$email}: {$result['error']}");
     }
 
     return $result['success'];

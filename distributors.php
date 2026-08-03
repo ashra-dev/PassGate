@@ -116,7 +116,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['global_action']) && $_POST['global_action'] === 'reset_allocations') {
         $db->prepare(
             "UPDATE tickets SET allocated_distributor_id = NULL, allocated_distributor_name = 'Vault Pool'
-             WHERE event_id = :event_id"
+             WHERE event_id = :event_id AND customer_id IS NULL"
         )->execute(['event_id' => $eventId]);
         auditLog('CLEANSE', "Allocations reset for event {$eventId}");
         safeRedirect('distributors.php?' . $eventQuery('dashboard'));
@@ -201,15 +201,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // --- Data queries (scoped to selected event) ---
-$summaryStmt = $db->prepare(
-    "SELECT
-        COUNT(*) AS total,
-        COUNT(*) FILTER (WHERE allocated_distributor_id IS NOT NULL AND allocated_distributor_id <> '') AS allocated,
-        COUNT(*) FILTER (WHERE allocated_distributor_id IS NULL OR allocated_distributor_id = '') AS unallocated
-     FROM tickets WHERE event_id = :event_id"
-);
-$summaryStmt->execute(['event_id' => $eventId]);
-$summary = $summaryStmt->fetch();
+$summary = getEventTicketSummary($db, $eventId);
 
 $distributors = $db->query('SELECT * FROM distributors ORDER BY name')->fetchAll();
 $distributorMap = [];
@@ -218,10 +210,12 @@ foreach ($distributors as $d) {
 }
 
 $ticketsStmt = $db->prepare(
-    'SELECT t.*, ti.name AS tier_name, ti.price, e.name AS event_name
+    'SELECT t.*, ti.name AS tier_name, ti.price, e.name AS event_name,
+            c.email AS customer_email, c.name AS customer_name
      FROM tickets t
      JOIN tiers ti ON ti.id = t.tier_id
      JOIN events e ON e.id = t.event_id
+     LEFT JOIN customers c ON c.id = t.customer_id
      WHERE t.event_id = :event_id
      ORDER BY t.physical_number'
 );
@@ -243,6 +237,7 @@ $recentScansStmt->execute(['event_id' => $eventId]);
 $recentScans = $recentScansStmt->fetchAll();
 
 $stalls = getAllStalls($db);
+$customers = getAllCustomersWithStats($db);
 $stallFlashError = $_SESSION['stall_flash_error'] ?? '';
 unset($_SESSION['stall_flash_error']);
 
@@ -288,6 +283,8 @@ function ticketBenefits(PDO $db, string $ticketId, int $tierId): array
     return $stmt->fetchAll();
 }
 
+$onlineSalesCount = (int) $summary['sold_online'];
+$distributorSalesCount = (int) $summary['allocated'];
 $chartLabels = array_column($stationChart, 'station_type');
 $chartData = array_map('intval', array_column($stationChart, 'cnt'));
 ?>
@@ -363,7 +360,7 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
             <select name="event_id" id="event_id" onchange="this.form.submit()">
                 <?php foreach ($allEvents as $ev): ?>
                     <option value="<?php echo (int) $ev['id']; ?>" <?php echo (int) $ev['id'] === $eventId ? 'selected' : ''; ?>>
-                        <?php echo htmlspecialchars($ev['name']); ?> (<?php echo (int) $ev['ticket_count']; ?> tickets)
+                        <?php echo htmlspecialchars($ev['name']); ?> (<?php echo (int) $ev['vault_available']; ?> avail / <?php echo (int) $ev['ticket_count']; ?> total)
                     </option>
                 <?php endforeach; ?>
             </select>
@@ -389,6 +386,7 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
     <a href="?<?php echo adminEventQuery($eventId, 'stalls'); ?>" class="tab-link <?php echo $active_tab === 'stalls' ? 'active' : ''; ?>">Stalls</a>
     <a href="?<?php echo adminEventQuery($eventId, 'allocation'); ?>" class="tab-link <?php echo $active_tab === 'allocation' ? 'active' : ''; ?>">Allocation</a>
     <a href="?<?php echo adminEventQuery($eventId, 'analytics'); ?>" class="tab-link <?php echo $active_tab === 'analytics' ? 'active' : ''; ?>">Analytics</a>
+    <a href="?<?php echo adminEventQuery($eventId, 'customers'); ?>" class="tab-link <?php echo $active_tab === 'customers' ? 'active' : ''; ?>">Customers</a>
     <a href="tickets_qr.php?<?php echo adminEventQuery($eventId); ?>" class="tab-link">QR Codes</a>
 </div>
 <?php endif; ?>
@@ -404,6 +402,8 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
                 <th>Event</th>
                 <th>Created</th>
                 <th>Tickets</th>
+                <th>Available</th>
+                <th>Sold Online</th>
                 <th>Scans</th>
                 <th>Terminal</th>
                 <th>Actions</th>
@@ -411,13 +411,15 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
         </thead>
         <tbody>
             <?php if ($allEvents === []): ?>
-                <tr><td colspan="6">No events yet. <a href="setup.php">Create your first event</a>.</td></tr>
+                <tr><td colspan="8">No events yet. <a href="setup.php">Create your first event</a>.</td></tr>
             <?php else: ?>
                 <?php foreach ($allEvents as $ev): ?>
                     <tr>
                         <td><strong><?php echo htmlspecialchars($ev['name']); ?></strong></td>
                         <td><?php echo htmlspecialchars(substr((string) $ev['created_at'], 0, 16)); ?></td>
                         <td><?php echo (int) $ev['ticket_count']; ?></td>
+                        <td><?php echo (int) $ev['vault_available']; ?></td>
+                        <td><?php echo (int) $ev['sold_online']; ?></td>
                         <td><?php echo (int) $ev['scan_count']; ?></td>
                         <td><?php echo (int) $ev['id'] === $terminalEventId ? '● Active' : '—'; ?></td>
                         <td style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -438,8 +440,9 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
 <?php elseif ($active_tab === 'dashboard'): ?>
     <div class="summary-grid">
         <div class="summary-card" style="border-top:4px solid #2563eb;"><h3>Total Tickets</h3><div class="metric"><?php echo (int) $summary['total']; ?></div></div>
-        <div class="summary-card" style="border-top:4px solid #16a34a;"><h3>Allocated</h3><div class="metric" style="color:#16a34a;"><?php echo (int) $summary['allocated']; ?></div></div>
-        <div class="summary-card" style="border-top:4px solid #ea580c;"><h3>Unallocated</h3><div class="metric" style="color:#ea580c;"><?php echo (int) $summary['unallocated']; ?></div></div>
+        <div class="summary-card" style="border-top:4px solid #ea580c;"><h3>Vault Available</h3><div class="metric" style="color:#ea580c;"><?php echo (int) $summary['vault_available']; ?></div></div>
+        <div class="summary-card" style="border-top:4px solid #9333ea;"><h3>Allocated</h3><div class="metric" style="color:#9333ea;"><?php echo (int) $summary['allocated']; ?></div></div>
+        <div class="summary-card" style="border-top:4px solid #16a34a;"><h3>Sold Online</h3><div class="metric" style="color:#16a34a;"><?php echo (int) $summary['sold_online']; ?></div></div>
     </div>
 
     <div class="two-col">
@@ -504,10 +507,10 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
 <?php elseif ($active_tab === 'ledger'): ?>
     <div class="summary-grid">
         <div class="summary-card"><h3>Total</h3><div class="metric"><?php echo (int) $summary['total']; ?></div></div>
-        <div class="summary-card"><h3>Allocated / Unallocated</h3><div class="metric"><?php echo (int) $summary['allocated']; ?> / <?php echo (int) $summary['unallocated']; ?></div></div>
+        <div class="summary-card"><h3>Available / Allocated / Sold</h3><div class="metric"><?php echo (int) $summary['vault_available']; ?> / <?php echo (int) $summary['allocated']; ?> / <?php echo (int) $summary['sold_online']; ?></div></div>
     </div>
     <table>
-        <thead><tr><th>Ticket ID</th><th>Physical #</th><th>Tier</th><th>Price</th><th>Handler</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Ticket ID</th><th>Physical #</th><th>Tier</th><th>Price</th><th>Handler</th><th>Sold To</th><th>Actions</th></tr></thead>
         <tbody>
             <?php foreach ($tickets as $row): ?>
                 <?php $benefits = ticketBenefits($db, $row['id'], (int) $row['tier_id']); ?>
@@ -516,7 +519,24 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
                     <td><strong>#<?php echo (int) $row['physical_number']; ?></strong></td>
                     <td><?php echo htmlspecialchars($row['tier_name']); ?></td>
                     <td><?php echo formatPrice((float) $row['price']); ?></td>
-                    <td><?php echo empty($row['allocated_distributor_id']) ? '<em>Vault Pool</em>' : htmlspecialchars($row['allocated_distributor_name']); ?></td>
+                    <td>
+                        <?php if (!empty($row['customer_id'])): ?>
+                            <span class="text-emerald-700 font-semibold">Online Sale</span>
+                        <?php elseif (empty($row['allocated_distributor_id'])): ?>
+                            <em>Vault Pool</em>
+                        <?php else: ?>
+                            <?php echo htmlspecialchars($row['allocated_distributor_name']); ?>
+                        <?php endif; ?>
+                    </td>
+                    <td>
+                        <?php if (!empty($row['customer_email'])): ?>
+                            <span class="text-emerald-700"><?php echo htmlspecialchars($row['customer_email']); ?></span>
+                        <?php elseif (!empty($row['allocated_distributor_name']) && $row['allocated_distributor_name'] === 'Online Sale'): ?>
+                            <span class="text-emerald-700"><em>Online (legacy)</em></span>
+                        <?php else: ?>
+                            <span class="text-slate-400">—</span>
+                        <?php endif; ?>
+                    </td>
                     <td>
                         <span class="text-xs text-slate-500">
                             <?php
@@ -688,7 +708,7 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
                     <thead><tr><th></th><th>Ticket ID</th><th>Physical #</th><th>Tier</th></tr></thead>
                     <tbody>
                         <?php foreach ($tickets as $row): ?>
-                            <?php if (empty($row['allocated_distributor_id'])): ?>
+                            <?php if (empty($row['allocated_distributor_id']) && empty($row['customer_id'])): ?>
                                 <tr>
                                     <td><input type="checkbox" name="selected_tickets[]" value="<?php echo htmlspecialchars($row['id']); ?>"></td>
                                     <td><code><?php echo htmlspecialchars($row['id']); ?></code></td>
@@ -705,6 +725,11 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
     <?php endif; ?>
 
 <?php elseif ($active_tab === 'analytics'): ?>
+    <div class="summary-grid" style="margin-bottom:20px;">
+        <div class="summary-card" style="border-top:4px solid #16a34a;"><h3>Online Sales</h3><div class="metric" style="color:#16a34a;"><?php echo $onlineSalesCount; ?></div></div>
+        <div class="summary-card" style="border-top:4px solid #2563eb;"><h3>Distributor Allocations</h3><div class="metric" style="color:#2563eb;"><?php echo $distributorSalesCount; ?></div></div>
+        <div class="summary-card" style="border-top:4px solid #ea580c;"><h3>Vault Available</h3><div class="metric" style="color:#ea580c;"><?php echo (int) $summary['vault_available']; ?></div></div>
+    </div>
     <?php $filterDist = $_GET['filter_distributor'] ?? 'ALL'; ?>
     <form method="GET" style="margin-bottom:15px;">
         <input type="hidden" name="tab" value="analytics">
@@ -726,7 +751,15 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
                         <td><code><?php echo htmlspecialchars($row['id']); ?></code></td>
                         <td>#<?php echo (int) $row['physical_number']; ?></td>
                         <td><?php echo htmlspecialchars($row['tier_name']); ?></td>
-                        <td><?php echo empty($row['allocated_distributor_id']) ? 'Vault Pool' : htmlspecialchars($row['allocated_distributor_name']); ?></td>
+                        <td>
+                            <?php if (!empty($row['customer_id'])): ?>
+                                Online Sale
+                            <?php elseif (empty($row['allocated_distributor_id'])): ?>
+                                Vault Pool
+                            <?php else: ?>
+                                <?php echo htmlspecialchars($row['allocated_distributor_name']); ?>
+                            <?php endif; ?>
+                        </td>
                         <td>
                             <?php foreach ($benefits as $b): ?>
                                 <div><?php echo htmlspecialchars(trim($b['name'])); ?>: [<?php echo (int) $b['used']; ?>/<?php echo (int) $b['max_uses']; ?>]</div>
@@ -735,6 +768,26 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
                     </tr>
                 <?php endif; ?>
             <?php endforeach; ?>
+        </tbody>
+    </table>
+<?php elseif ($active_tab === 'customers'): ?>
+    <p style="font-size:13px;color:#64748b;margin-bottom:15px;">Customers who purchased tickets online. <a href="buy.php" class="text-indigo-600">Public buy page</a></p>
+    <table>
+        <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Tickets</th><th>Joined</th></tr></thead>
+        <tbody>
+            <?php if ($customers === []): ?>
+                <tr><td colspan="5">No customers yet.</td></tr>
+            <?php else: ?>
+                <?php foreach ($customers as $cust): ?>
+                    <tr>
+                        <td><?php echo (int) $cust['id']; ?></td>
+                        <td><strong><?php echo htmlspecialchars($cust['name'] ?: '—'); ?></strong></td>
+                        <td><?php echo htmlspecialchars($cust['email']); ?></td>
+                        <td><?php echo (int) $cust['ticket_count']; ?></td>
+                        <td><?php echo htmlspecialchars(substr((string) $cust['created_at'], 0, 16)); ?></td>
+                    </tr>
+                <?php endforeach; ?>
+            <?php endif; ?>
         </tbody>
     </table>
 <?php endif; ?>

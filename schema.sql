@@ -32,6 +32,15 @@ CREATE TABLE IF NOT EXISTS benefits (
     UNIQUE (tier_id, name)
 );
 
+CREATE TABLE IF NOT EXISTS customers (
+    id            SERIAL       PRIMARY KEY,
+    email         VARCHAR(255) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    name          VARCHAR(255) DEFAULT '',
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS tickets (
     id                          VARCHAR(100) PRIMARY KEY,
     physical_number             INTEGER      NOT NULL,
@@ -39,7 +48,18 @@ CREATE TABLE IF NOT EXISTS tickets (
     tier_id                     INTEGER      NOT NULL REFERENCES tiers(id) ON DELETE RESTRICT,
     status                      VARCHAR(50)  NOT NULL DEFAULT 'Active',
     allocated_distributor_id    VARCHAR(50)  REFERENCES distributors(id) ON DELETE SET NULL,
-    allocated_distributor_name  VARCHAR(255) DEFAULT ''
+    allocated_distributor_name  VARCHAR(255) DEFAULT '',
+    customer_id                 INTEGER      REFERENCES customers(id) ON DELETE SET NULL,
+    purchased_at                TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS customer_tickets (
+    id           SERIAL       PRIMARY KEY,
+    customer_id  INTEGER      NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    ticket_id    VARCHAR(100) NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+    purchased_at TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    payment_id   VARCHAR(255) DEFAULT '',
+    UNIQUE (ticket_id)
 );
 
 CREATE TABLE IF NOT EXISTS stalls (
@@ -79,5 +99,9 @@ CREATE INDEX IF NOT EXISTS idx_scans_benefit_id          ON scans (benefit_id);
 CREATE INDEX IF NOT EXISTS idx_scans_scanned_at          ON scans (scanned_at DESC);
 CREATE INDEX IF NOT EXISTS idx_scans_stall_id            ON scans (stall_id);
 CREATE INDEX IF NOT EXISTS idx_stalls_email              ON stalls (email);
+CREATE INDEX IF NOT EXISTS idx_tickets_customer_id       ON tickets (customer_id);
+CREATE INDEX IF NOT EXISTS idx_customers_email           ON customers (email);
+CREATE INDEX IF NOT EXISTS idx_customer_tickets_customer ON customer_tickets (customer_id);
+CREATE INDEX IF NOT EXISTS idx_customer_tickets_ticket   ON customer_tickets (ticket_id);
 CREATE INDEX IF NOT EXISTS idx_login_tokens_token       ON login_tokens (token);
 CREATE INDEX IF NOT EXISTS idx_login_tokens_expires_at   ON login_tokens (expires_at);

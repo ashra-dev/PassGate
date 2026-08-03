@@ -125,7 +125,9 @@ $smtp_configured = trim(env('MAIL_HOST', '') ?? '') !== '';
         </button>
         <p class="text-center text-xs text-slate-400">
           <a href="manual_login.php" class="text-indigo-500 hover:underline">Admin: paste login token</a>
-          · <a href="stall_login.php" class="text-emerald-600 hover:underline">Stall login page</a>
+          · <a href="stall_login.php" class="text-emerald-600 hover:underline">Stall login</a>
+          · <a href="customer_login.php" class="text-violet-600 hover:underline">Customer login</a>
+          · <a href="buy.php" class="text-amber-600 hover:underline">Buy tickets</a>
         </p>
         <?php if ($is_stall_authenticated): ?>
         <p class="text-center text-xs text-emerald-600">
