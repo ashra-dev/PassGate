@@ -102,7 +102,7 @@ $totalTickets = array_sum(array_map('count', $ticketsByTier));
                                 </div>
                                 <div class="text-[10px] text-slate-500">
                                     #<?php echo (int) $ticket['physical_number']; ?>
-                                    · $<?php echo number_format((float) $ticket['price'], 2); ?>
+                                    · <?php echo formatPrice((float) $ticket['price']); ?>
                                 </div>
                             </div>
                         <?php endforeach; ?>

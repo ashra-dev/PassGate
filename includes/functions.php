@@ -24,6 +24,14 @@ function normalizeStationName(string $name): string
 }
 
 /**
+ * Format a monetary amount in Nepalese Rupees (NRS).
+ */
+function formatPrice(float|string $amount): string
+{
+    return 'NRS ' . number_format((float) $amount, 2);
+}
+
+/**
  * Process a ticket scan against a station/benefit name.
  *
  * @param int|null $stallId Optional stall attribution for the scan row.
@@ -627,11 +635,14 @@ function ensureStallsSchema(PDO $db): void
         'CREATE TABLE IF NOT EXISTS stalls (
             id            SERIAL PRIMARY KEY,
             name          VARCHAR(255) NOT NULL,
-            email         VARCHAR(255) NOT NULL UNIQUE,
+            email         VARCHAR(255) NOT NULL,
             password_hash VARCHAR(255) NOT NULL,
             created_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )'
     );
+
+    // Allow duplicate emails (same operator, multiple stalls) — drop legacy UNIQUE if present
+    $db->exec('ALTER TABLE stalls DROP CONSTRAINT IF EXISTS stalls_email_key');
 
     $colCheck = $db->prepare(
         "SELECT 1 FROM information_schema.columns
@@ -650,6 +661,39 @@ function ensureStallsSchema(PDO $db): void
 }
 
 /**
+ * Fetch all stall rows sharing an email (case-insensitive).
+ *
+ * @return array<int, array<string, mixed>>
+ */
+function getStallsByEmail(PDO $db, string $email): array
+{
+    $stmt = $db->prepare('SELECT id, name, email, password_hash FROM stalls WHERE LOWER(email) = :email');
+    $stmt->execute(['email' => strtolower(trim($email))]);
+
+    return $stmt->fetchAll();
+}
+
+/**
+ * Ensure password differs from other stalls with the same email (login uses email + password).
+ *
+ * @throws InvalidArgumentException
+ */
+function assertUniqueStallPasswordForEmail(PDO $db, string $email, string $password, ?int $excludeStallId = null): void
+{
+    foreach (getStallsByEmail($db, $email) as $stall) {
+        if ($excludeStallId !== null && (int) $stall['id'] === $excludeStallId) {
+            continue;
+        }
+
+        if (password_verify($password, $stall['password_hash'])) {
+            throw new InvalidArgumentException(
+                'Another stall with this email already uses this password. Each stall needs a unique password.'
+            );
+        }
+    }
+}
+
+/**
  * Authenticate a stall by email/password. Returns stall row or null.
  *
  * @return array<string, mixed>|null
@@ -661,15 +705,22 @@ function authenticateStall(PDO $db, string $email, string $password): ?array
         return null;
     }
 
-    $stmt = $db->prepare('SELECT id, name, email, password_hash FROM stalls WHERE LOWER(email) = :email');
-    $stmt->execute(['email' => $email]);
-    $stall = $stmt->fetch();
-
-    if (!$stall || !password_verify($password, $stall['password_hash'])) {
-        return null;
+    $matches = [];
+    foreach (getStallsByEmail($db, $email) as $stall) {
+        if (password_verify($password, $stall['password_hash'])) {
+            $matches[] = $stall;
+        }
     }
 
-    return $stall;
+    if (count($matches) === 1) {
+        return $matches[0];
+    }
+
+    if (count($matches) > 1) {
+        auditLog('AUTH', "Ambiguous stall login for {$email} (duplicate password across stalls)");
+    }
+
+    return null;
 }
 
 /**
@@ -730,6 +781,8 @@ function createStall(PDO $db, string $name, string $email, string $password): in
         throw new InvalidArgumentException('Invalid email address.');
     }
 
+    assertUniqueStallPasswordForEmail($db, $email, $password);
+
     $stmt = $db->prepare(
         'INSERT INTO stalls (name, email, password_hash) VALUES (:name, :email, :password_hash) RETURNING id'
     );
@@ -751,15 +804,21 @@ function resetStallPassword(PDO $db, int $stallId, string $password): void
         throw new InvalidArgumentException('Password is required.');
     }
 
+    $stallStmt = $db->prepare('SELECT id, email FROM stalls WHERE id = :id');
+    $stallStmt->execute(['id' => $stallId]);
+    $stall = $stallStmt->fetch();
+
+    if (!$stall) {
+        throw new InvalidArgumentException('Stall not found.');
+    }
+
+    assertUniqueStallPasswordForEmail($db, (string) $stall['email'], $password, $stallId);
+
     $stmt = $db->prepare('UPDATE stalls SET password_hash = :hash WHERE id = :id');
     $stmt->execute([
         'hash' => password_hash($password, PASSWORD_DEFAULT),
         'id'   => $stallId,
     ]);
-
-    if ($stmt->rowCount() === 0) {
-        throw new InvalidArgumentException('Stall not found.');
-    }
 }
 
 /**

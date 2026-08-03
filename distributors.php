@@ -515,7 +515,7 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
                     <td><code><?php echo htmlspecialchars($row['id']); ?></code></td>
                     <td><strong>#<?php echo (int) $row['physical_number']; ?></strong></td>
                     <td><?php echo htmlspecialchars($row['tier_name']); ?></td>
-                    <td>$<?php echo number_format((float) $row['price'], 2); ?></td>
+                    <td><?php echo formatPrice((float) $row['price']); ?></td>
                     <td><?php echo empty($row['allocated_distributor_id']) ? '<em>Vault Pool</em>' : htmlspecialchars($row['allocated_distributor_name']); ?></td>
                     <td>
                         <span class="text-xs text-slate-500">
@@ -578,7 +578,7 @@ $chartData = array_map('intval', array_column($stationChart, 'cnt'));
 
     <div style="background:white;padding:20px;border-radius:8px;border:1px solid #e2e8f0;margin-bottom:25px;">
         <h4>Add New Stall</h4>
-        <p style="font-size:13px;color:#64748b;margin-bottom:12px;">Stall name should match a benefit name (e.g. VIP Entry, Food Stand) so scans link to the correct entitlement.</p>
+        <p style="font-size:13px;color:#64748b;margin-bottom:12px;">Stall name should match a benefit name (e.g. VIP Entry, Food Stand). Multiple stalls can share one email — each stall must have a <strong>different password</strong> (email + password identifies the stall at login).</p>
         <form method="POST" style="display:flex;gap:15px;align-items:flex-end;flex-wrap:wrap;">
             <input type="hidden" name="global_action" value="add_stall">
             <div style="flex:1;min-width:150px;"><label>Stall Name</label><input type="text" name="s_name" required style="width:100%;padding:8px;" placeholder="VIP Entry"></div>

@@ -83,7 +83,7 @@ $smtp_configured = trim(env('MAIL_HOST', '') ?? '') !== '';
           <input type="email" id="login-stall-email" class="w-full bg-slate-100 text-sm rounded-xl px-3 py-2.5 border-none" placeholder="stall@event.com" autocomplete="username">
           <label class="block text-[10px] uppercase font-bold text-slate-400 mt-3 mb-1.5 pl-1">Password</label>
           <input type="password" id="login-stall-password" class="w-full bg-slate-100 text-sm rounded-xl px-3 py-2.5 border-none" autocomplete="current-password">
-          <p class="text-xs text-slate-400 mt-2">Your stall name must match a benefit configured for the event.</p>
+          <p class="text-xs text-slate-400 mt-2">Same email can be used for multiple stalls — each stall needs a unique password.</p>
         </div>
 
         <?php if ($station_pin_enabled): ?>

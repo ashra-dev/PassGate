@@ -117,7 +117,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['confirmed'])) {
                     ?>
                     <div class="confirm-tier-summary">
                         <strong><?php echo htmlspecialchars($name); ?></strong> –
-                        <?php echo (int) $payload['tier_qty'][$tIdx]; ?> @ $<?php echo number_format((float) $payload['tier_price'][$tIdx], 2); ?>
+                        <?php echo (int) $payload['tier_qty'][$tIdx]; ?> @ <?php echo formatPrice((float) $payload['tier_price'][$tIdx]); ?>
                         <ul style="margin:5px 0 0 0; padding-left:20px; font-size:13px;">
                             <?php
                             if (isset($payload['benefit_name'][$tIdx])):
@@ -175,7 +175,7 @@ function addTicketTier(savedName = '', savedQty = '', savedPrice = '', savedBene
             <div style="display:flex; gap:15px;">
                 <div style="flex:2;"><label>Tier Name</label><input type="text" name="tier_name[${tierIndex}]" required value="${savedName === '+ Add Ticket Tier' ? '' : savedName}" placeholder="VIP"></div>
                 <div style="flex:1;"><label>Qty</label><input type="number" name="tier_qty[${tierIndex}]" class="tier-qty-input" required value="${savedQty}" oninput="validateFormState()"></div>
-                <div style="flex:1;"><label>Price</label><input type="text" name="tier_price[${tierIndex}]" required value="${savedPrice}" placeholder="199.00"></div>
+                <div style="flex:1;"><label>Price (NRS)</label><input type="text" name="tier_price[${tierIndex}]" required value="${savedPrice}" placeholder="1999.00"></div>
             </div>
             <h4 style="margin-top:20px;">Benefits</h4>
             <div id="benefit_container_${tierIndex}"></div>
