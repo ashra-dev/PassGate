@@ -8,7 +8,7 @@ require_once __DIR__ . '/includes/functions.php';
 require_once __DIR__ . '/includes/ui.php';
 
 if (isStallAuthenticated()) {
-    safeRedirect('index.php');
+    safeRedirect('terminal.php');
 }
 
 $error = '';
@@ -28,7 +28,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             establishStallSession($stall);
             auditLog('AUTH', "Stall login success (page): {$stall['name']} ({$email})");
-            safeRedirect('index.php');
+            safeRedirect('terminal.php');
         }
     } catch (Throwable $e) {
         auditLog('AUTH', 'Stall login page error: ' . $e->getMessage());
@@ -70,7 +70,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       </form>
 
       <p class="pg-links" style="margin-top:1rem;">
-        <a href="index.php">Back to terminal</a>
+        <a href="terminal.php">Back to terminal</a>
       </p>
     </div>
   </div>

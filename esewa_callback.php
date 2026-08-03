@@ -34,7 +34,7 @@ try {
         throw new RuntimeException('Invalid JSON from eSewa.');
     }
 
-    $secretKey = trim(env('ESEWA_SECRET_KEY', '') ?? '');
+    $secretKey = getEsewaSecretKey();
     if (!verifyEsewaResponseSignature($callbackData, $secretKey)) {
         auditLog('ESEWA', 'Callback signature verification failed for ' . ($callbackData['transaction_uuid'] ?? 'unknown'));
         throw new RuntimeException('Payment signature verification failed.');

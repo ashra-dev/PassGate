@@ -22,6 +22,14 @@ $eventId = (int) ($input['event_id'] ?? 0);
 $tierId = (int) ($input['tier_id'] ?? 0);
 $email = strtolower(trim($input['email'] ?? ''));
 
+if (!isCustomerAuthenticated()) {
+    http_response_code(401);
+    echo json_encode(['status' => 'error', 'message' => 'Please log in before buying.']);
+    exit;
+}
+
+$email = strtolower(trim((string) ($_SESSION['customer_email'] ?? '')));
+
 if ($eventId <= 0 || $tierId <= 0 || $email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
     http_response_code(400);
     echo json_encode(['status' => 'error', 'message' => 'Invalid event, tier, or email.']);

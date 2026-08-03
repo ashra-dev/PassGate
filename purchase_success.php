@@ -5,13 +5,11 @@ declare(strict_types=1);
 session_start();
 
 require_once __DIR__ . '/includes/functions.php';
+require_once __DIR__ . '/includes/ui.php';
 
 $sessionId = trim($_GET['session_id'] ?? '');
 $error = '';
 $ticketId = null;
-$eventName = '';
-$tierName = '';
-$customerEmail = '';
 
 if ($sessionId === '') {
     $error = 'Missing payment session.';
@@ -37,13 +35,11 @@ if ($sessionId === '') {
                     $tierName = $result['tier_name'] ?? '';
                     $customerEmail = $result['email'] ?? '';
 
-                    // Auto-login so dashboard shows the new ticket immediately
                     $customer = getCustomerByEmail($db, $customerEmail);
                     if ($customer !== null) {
                         establishCustomerSession($customer);
                     }
 
-                    // Email QR (webhook may also send – idempotent enough)
                     if ($eventName !== '') {
                         sendTicketPurchaseEmail($customerEmail, $ticketId, $eventName, $tierName);
                     }
@@ -61,15 +57,17 @@ if ($sessionId === '') {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Purchase – PassGate Pro</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+    <?php passgateRenderHead('PassGate – Purchase'); ?>
 </head>
-<body class="bg-slate-50 min-h-screen flex items-center justify-center p-4">
-  <div class="bg-white rounded-2xl p-8 max-w-md w-full text-center space-y-4">
-    <div class="text-rose-600 font-semibold"><?php echo htmlspecialchars($error); ?></div>
-    <a href="buy.php" class="text-indigo-600 hover:underline">Back to events</a>
-  </div>
+<body class="pg-body">
+    <div class="pg-auth-stage">
+        <div class="pg-card pg-card--auth" style="text-align:center;">
+            <div class="pg-notice pg-notice--error"><?php echo htmlspecialchars($error); ?></div>
+            <div style="margin-top:1rem;display:grid;gap:0.55rem;">
+                <a class="pg-btn pg-btn--gold" href="buy.php">Back to events</a>
+                <a class="pg-btn pg-btn--ghost" href="customer_login.php">Customer login</a>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

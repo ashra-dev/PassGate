@@ -12,7 +12,7 @@ if (
     || $_SESSION['distributor_authenticated'] !== true
     || ($_SESSION['distributor_role'] ?? '') !== 'admin'
 ) {
-    header('Location: index.php');
+    header('Location: terminal.php');
     exit;
 }
 

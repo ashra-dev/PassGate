@@ -612,7 +612,7 @@ function completeMagicLinkLogin(PDO $db, string $email, string $token): array
         return [
             'success'  => true,
             'error'    => null,
-            'redirect' => $record['role'] === 'admin' ? 'distributors.php' : 'index.php',
+            'redirect' => $record['role'] === 'admin' ? 'distributors.php' : 'terminal.php',
         ];
     }
 
@@ -951,7 +951,7 @@ function redirectIfAuthenticated(): void
         safeRedirect('distributors.php');
     }
 
-    safeRedirect('index.php');
+    safeRedirect('terminal.php');
 }
 
 /**
@@ -1561,13 +1561,27 @@ function getStripeCurrency(): string
 function getStripeClient(): ?\Stripe\StripeClient
 {
     $secret = trim(env('STRIPE_SECRET_KEY', '') ?? '');
-    if ($secret === '' || str_contains($secret, '...') || !str_starts_with($secret, 'sk_')) {
+    if (
+        $secret === ''
+        || str_contains($secret, '...')
+        || str_contains($secret, 'your_')
+        || str_contains($secret, 'your-')
+        || !str_starts_with($secret, 'sk_')
+    ) {
         return null;
     }
 
     require_once __DIR__ . '/../vendor/autoload.php';
 
     return new \Stripe\StripeClient($secret);
+}
+
+/**
+ * Local-only checkout (APP_DEBUG=1) so buy flow can be tested without Stripe/eSewa keys.
+ */
+function isDevCheckoutEnabled(): bool
+{
+    return env('APP_DEBUG', '0') === '1';
 }
 
 /**
@@ -1618,10 +1632,32 @@ function sendTicketPurchaseEmail(string $email, string $ticketId, string $eventN
 // eSewa payment gateway
 // ---------------------------------------------------------------------------
 
-function isEsewaConfigured(): bool
+function getEsewaMerchantCode(): string
 {
     $code = trim(env('ESEWA_MERCHANT_CODE', '') ?? '');
+    if ($code === '' && isDevCheckoutEnabled()) {
+        // Public eSewa sandbox merchant (developer.esewa.com.np)
+        return 'EPAYTEST';
+    }
+
+    return $code;
+}
+
+function getEsewaSecretKey(): string
+{
     $secret = trim(env('ESEWA_SECRET_KEY', '') ?? '');
+    if ($secret === '' && isDevCheckoutEnabled()) {
+        // Public eSewa sandbox secret from their docs
+        return '8gBm/:&EnhH.1/q';
+    }
+
+    return $secret;
+}
+
+function isEsewaConfigured(): bool
+{
+    $code = getEsewaMerchantCode();
+    $secret = getEsewaSecretKey();
 
     return $code !== '' && $secret !== '' && !str_contains($code, 'your_');
 }
@@ -1738,8 +1774,8 @@ function buildEsewaPaymentForm(
     string $eventName,
     string $tierName
 ): array {
-    $merchantCode = trim(env('ESEWA_MERCHANT_CODE', '') ?? '');
-    $secretKey = trim(env('ESEWA_SECRET_KEY', '') ?? '');
+    $merchantCode = getEsewaMerchantCode();
+    $secretKey = getEsewaSecretKey();
     $appUrl = rtrim(env('APP_URL', 'http://localhost:8000'), '/');
 
     $amountStr = number_format($price, 2, '.', '');

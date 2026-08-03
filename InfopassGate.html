@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>InfopassGate — PassGate Project Information</title>
+<style>
+  @page { margin: 18mm 16mm; size: A4; }
+  body {
+    font-family: "Segoe UI", Calibri, Arial, sans-serif;
+    font-size: 11pt;
+    line-height: 1.45;
+    color: #0f172a;
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+  h1 { font-size: 22pt; margin: 0 0 6px; color: #1e3a8a; }
+  h2 {
+    font-size: 14pt;
+    margin: 22px 0 8px;
+    padding-bottom: 4px;
+    border-bottom: 2px solid #2563eb;
+    color: #1e40af;
+    page-break-after: avoid;
+  }
+  h3 { font-size: 12pt; margin: 14px 0 6px; color: #1e3a8a; page-break-after: avoid; }
+  p, li { margin: 4px 0; }
+  .meta { color: #475569; font-size: 10pt; margin-bottom: 18px; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 14px; font-size: 9.5pt; }
+  th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: #eff6ff; color: #1e3a8a; }
+  code, .mono { font-family: Consolas, "Courier New", monospace; font-size: 9pt; }
+  .fn { font-family: Consolas, "Courier New", monospace; font-weight: 700; color: #0f172a; }
+  ul { margin: 4px 0 10px 18px; padding: 0; }
+  .cover {
+    text-align: center;
+    padding: 40px 10px 28px;
+    border: 2px solid #2563eb;
+    border-radius: 12px;
+    margin-bottom: 28px;
+  }
+  .cover h1 { font-size: 26pt; }
+  .note { background: #f8fafc; border-left: 4px solid #2563eb; padding: 8px 12px; margin: 10px 0; }
+  .pagebreak { page-break-before: always; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <p class="meta" style="margin:0 0 8px;letter-spacing:0.12em;text-transform:uppercase;font-weight:700;color:#2563eb;">Project Information Document</p>
+  <h1>InfopassGate</h1>
+  <p style="font-size:14pt;margin:8px 0;"><strong>PassGate</strong> — Event Ticketing &amp; Benefit Scanning System</p>
+  <p class="meta">Prepared for: 8th Semester documentation<br>
+  Local project: <span class="mono">C:\Users\Dell\Projects\PassGate</span><br>
+  Repository: <span class="mono">https://github.com/ashra-dev/PassGate.git</span><br>
+  Document date: 3 August 2026<br>
+  Contributors: Puja (Yuna) · Ashra</p>
+</div>
+
+<h2>1. What is this project?</h2>
+<p><strong>PassGate</strong> is a web application for event ticketing and on-site benefit scanning. Organizers create events with ticket tiers and benefits (Entry, Lunch, etc.). Tickets start in a <strong>Vault Pool</strong>, can be allocated to distributors or sold online, and are redeemed at stalls by scanning QR codes.</p>
+<p><strong>Stack:</strong> PHP 8.x + PostgreSQL (no separate React frontend). Shared CSS design system in <span class="mono">assets/css/passgate.css</span>. Currency: NRS. Timezone: Asia/Kathmandu.</p>
+
+<div class="note">
+  <strong>Simple flow:</strong> Admin creates event → Vault tickets → Allocate / Sell online → Guest gets QR → Stall scans → Green / Yellow / Red outcome.
+</div>
+
+<h2>2. Who uses it? (Roles)</h2>
+<table>
+  <tr><th>Role</th><th>How they enter</th><th>What they do</th></tr>
+  <tr><td>Guest / Customer</td><td>Create account → Log in</td><td>Browse events, buy tickets, view QR in My tickets</td></tr>
+  <tr><td>Admin (Event Manager)</td><td>Staff login → magic-link email</td><td>Events, vault, stalls, allocation, analytics, QR print</td></tr>
+  <tr><td>Distributor</td><td>Magic-link email</td><td>Receives allocated ticket ranges</td></tr>
+  <tr><td>Stall staff</td><td>Email + password on terminal</td><td>Scan tickets for a benefit (name must match benefit)</td></tr>
+  <tr><td>PIN station</td><td>Shared PIN (demo)</td><td>Fallback unlock for a station</td></tr>
+</table>
+
+<h2>3. What we accomplished (work summary)</h2>
+<h3>3.1 Local setup</h3>
+<ul>
+  <li>PHP 8.4 with pdo_pgsql, OpenSSL, mbstring, curl, zip</li>
+  <li>Composer deps: PHPMailer, Stripe PHP, chillerlan QR</li>
+  <li>PostgreSQL database <span class="mono">passgate</span>, schema applied, admin seeded</li>
+  <li>Dev server: <span class="mono">php -S 127.0.0.1:8000</span></li>
+  <li>Windows-friendly magic-link dispatch (sync write to <span class="mono">dev_login.log</span> in debug)</li>
+</ul>
+
+<h3>3.2 UI redesign (PHP + shared CSS, no React)</h3>
+<ul>
+  <li>Bright modern blue theme (replaced Night Gate dark / pastel experiments)</li>
+  <li>Shared head helper + public nav</li>
+  <li>Landing page separate from scanner</li>
+  <li>Terminal UX: stall-first login, full-screen scan flash, auto-camera</li>
+  <li>Admin tabs polished: Events, Dashboard, Ledger, Distributors, Stalls, Allocation, Analytics, Customers</li>
+  <li>Setup wizard, QR print, auth pages restyled</li>
+</ul>
+
+<h3>3.3 Payment portal (Ashra + integration)</h3>
+<ul>
+  <li>Customer register / login / dashboard</li>
+  <li>Buy flow with Stripe and eSewa (+ local debug purchase when APP_DEBUG=1)</li>
+  <li>Account required before buying</li>
+  <li>QR generation for purchased tickets (SVG)</li>
+  <li>Admin inventory: vault available / sold online / gateway stats</li>
+</ul>
+
+<h3>3.4 Navigation &amp; product logic cleanup</h3>
+<ul>
+  <li><span class="mono">index.php</span> = landing; <span class="mono">terminal.php</span> = staff scanner</li>
+  <li>Public <span class="mono">events.php</span> — browse upcoming events without login</li>
+  <li>Buy requires customer session; payment APIs enforce logged-in email</li>
+  <li><span class="mono">validate.php</span> renamed conceptually to “Check ticket status” (read-only, not a gate scan)</li>
+  <li>Removed duplicate Staff / Admin CTAs on landing</li>
+</ul>
+
+<h2>4. Main screens (URLs)</h2>
+<table>
+  <tr><th>Page</th><th>File</th><th>Purpose</th></tr>
+  <tr><td>Home / Landing</td><td class="mono">index.php</td><td>Brand entry; Create account / Log in / View events</td></tr>
+  <tr><td>Upcoming events</td><td class="mono">events.php</td><td>Public browse of events &amp; tiers (no login)</td></tr>
+  <tr><td>Buy tickets</td><td class="mono">buy.php</td><td>Purchase (login required)</td></tr>
+  <tr><td>Create account</td><td class="mono">customer_register.php</td><td>Customer signup</td></tr>
+  <tr><td>Customer login</td><td class="mono">customer_login.php</td><td>Customer login</td></tr>
+  <tr><td>My tickets</td><td class="mono">customer_dashboard.php</td><td>QR codes &amp; benefit usage</td></tr>
+  <tr><td>Staff terminal</td><td class="mono">terminal.php</td><td>Stall / Admin / PIN login + scanner</td></tr>
+  <tr><td>Admin dashboard</td><td class="mono">distributors.php</td><td>Full event control center</td></tr>
+  <tr><td>Setup wizard</td><td class="mono">setup.php</td><td>Create event, tiers, benefits → Vault</td></tr>
+  <tr><td>QR print</td><td class="mono">tickets_qr.php</td><td>Printable QR sheets</td></tr>
+  <tr><td>Check ticket status</td><td class="mono">validate.php</td><td>Read-only ticket lookup (does not redeem)</td></tr>
+  <tr><td>QR image</td><td class="mono">qr.php</td><td>SVG QR for a ticket ID</td></tr>
+  <tr><td>Payments</td><td class="mono">create_checkout_session.php, esewa_*, stripe_webhook.php, thankyou.php, purchase_success.php, dev_purchase.php</td><td>Checkout &amp; fulfillment</td></tr>
+</table>
+
+<div class="pagebreak"></div>
+
+<h2>5. Correct user journeys</h2>
+<ol>
+  <li><strong>Customer:</strong> Create account → (optional View events) → Buy → Pay → My tickets (QR)</li>
+  <li><strong>Returning customer:</strong> Log in → Buy or My tickets</li>
+  <li><strong>Stall:</strong> Staff → stall email/password → Scan QR (redeems benefit)</li>
+  <li><strong>Admin:</strong> Staff → Admin magic link → Dashboard (create event, stalls, allocate, analytics)</li>
+  <li><strong>Status check:</strong> Check ticket status — view only; scanning on terminal redeems</li>
+</ol>
+<p><strong>Important rule:</strong> Stall name must match the benefit name exactly (e.g. benefit <em>Lunch</em> → stall <em>Lunch</em>).</p>
+
+<h2>6. Complete function reference</h2>
+<p>All application PHP functions listed below (helpers in <span class="mono">includes/</span>, <span class="mono">config.php</span>, <span class="mono">db.php</span>).</p>
+
+<h3>6.1 Configuration &amp; database</h3>
+<table>
+  <tr><th>Function</th><th>File</th><th>Purpose</th></tr>
+  <tr><td class="fn">loadEnv($path)</td><td>config.php</td><td>Load key=value pairs from .env</td></tr>
+  <tr><td class="fn">env($key, $default)</td><td>config.php</td><td>Read environment value</td></tr>
+  <tr><td class="fn">getDb()</td><td>db.php</td><td>Return shared PDO PostgreSQL connection</td></tr>
+</table>
+
+<h3>6.2 UI helpers</h3>
+<table>
+  <tr><th>Function</th><th>File</th><th>Purpose</th></tr>
+  <tr><td class="fn">passgateAssetUrl($path)</td><td>includes/ui.php</td><td>Normalize asset URL path</td></tr>
+  <tr><td class="fn">passgateRenderHead($title, $options)</td><td>includes/ui.php</td><td>Shared HTML head (CSS, fonts, icons)</td></tr>
+  <tr><td class="fn">passgateRenderPublicNav($active)</td><td>includes/ui.php</td><td>Public nav: Events · Buy · Account · Staff</td></tr>
+  <tr><td class="fn">passgateSafeNextUrl($next, $default)</td><td>includes/ui.php</td><td>Whitelist post-login redirects</td></tr>
+</table>
+
+<h3>6.3 Mail helpers</h3>
+<table>
+  <tr><th>Function</th><th>File</th><th>Purpose</th></tr>
+  <tr><td class="fn">shouldUseDevMailFallback()</td><td>includes/mailer.php</td><td>True when debug / no SMTP — write to log</td></tr>
+  <tr><td class="fn">writeDevLoginLink($email, $link)</td><td>includes/mailer.php</td><td>Append magic/ticket links to dev_login.log</td></tr>
+  <tr><td class="fn">sendSmtpEmail($to, $subject, $text, $html)</td><td>includes/mailer.php</td><td>Send email via PHPMailer SMTP</td></tr>
+</table>
+
+<h3>6.4 Core utilities &amp; scanning</h3>
+<table>
+  <tr><th>Function</th><th>Purpose</th></tr>
+  <tr><td class="fn">auditLog($category, $message)</td><td>Append operational audit line to system_audit.log</td></tr>
+  <tr><td class="fn">normalizeStationName($name)</td><td>Normalize benefit/station label for matching</td></tr>
+  <tr><td class="fn">formatPrice($amount)</td><td>Format amount as NRS currency string</td></tr>
+  <tr><td class="fn">processTicketScan($db, $ticketId, $station, $stallId)</td><td>Redeem one benefit use; return green/yellow/red style result</td></tr>
+  <tr><td class="fn">getTicketDetails($db, $ticketId)</td><td>Ticket metadata + benefits used/max for lookup UI</td></tr>
+  <tr><td class="fn">resolveScanAuthContext($requestedStation)</td><td>Decide who may scan (stall / PIN / distributor context)</td></tr>
+</table>
+
+<h3>6.5 Events, vault &amp; tickets</h3>
+<table>
+  <tr><th>Function</th><th>Purpose</th></tr>
+  <tr><td class="fn">getDistinctBenefitNames($db, $eventId)</td><td>Station/benefit names for an event</td></tr>
+  <tr><td class="fn">getCurrentEventName($db, $eventId)</td><td>Display name for terminal header</td></tr>
+  <tr><td class="fn">hasAnyEvents($db)</td><td>Whether any event exists</td></tr>
+  <tr><td class="fn">hasActiveRegistry($db)</td><td>Whether tickets exist for active work</td></tr>
+  <tr><td class="fn">getEventById($db, $eventId)</td><td>Fetch one event row</td></tr>
+  <tr><td class="fn">resolveAdminEventId($db)</td><td>Which event admin UI is viewing</td></tr>
+  <tr><td class="fn">resolveTerminalEventId($db)</td><td>Which event terminal scans against</td></tr>
+  <tr><td class="fn">adminEventQuery($eventId, $tab)</td><td>Build query string for admin links</td></tr>
+  <tr><td class="fn">getAllEventsWithStats($db)</td><td>Events list with ticket/scan/vault/sold counts</td></tr>
+  <tr><td class="fn">getEventTicketSummary($db, $eventId)</td><td>Totals: total, allocated, vault, sold online</td></tr>
+  <tr><td class="fn">generateTicketId(...)</td><td>Build IDs like E1-GLO-VIP-1</td></tr>
+  <tr><td class="fn">createEventWithTiers($db, $name, $tiers)</td><td>Create event + tiers + benefits + vault tickets</td></tr>
+  <tr><td class="fn">getTicketsGroupedByTier($db, $eventId, $tierId)</td><td>Tickets grouped for QR printing</td></tr>
+  <tr><td class="fn">getEventTiers($db, $eventId)</td><td>List tiers for an event</td></tr>
+</table>
+
+<h3>6.6 Auth — distributors &amp; stalls</h3>
+<table>
+  <tr><th>Function</th><th>Purpose</th></tr>
+  <tr><td class="fn">parseMagicLinkInput($input)</td><td>Parse pasted URL or raw token/email</td></tr>
+  <tr><td class="fn">completeMagicLinkLogin($db, $email, $token)</td><td>Validate token; start distributor/admin session</td></tr>
+  <tr><td class="fn">isDistributorAuthenticated()</td><td>Session check for distributor/admin</td></tr>
+  <tr><td class="fn">isStallAuthenticated()</td><td>Session check for stall</td></tr>
+  <tr><td class="fn">ensureStallsSchema($db)</td><td>Create/upgrade stalls table safely</td></tr>
+  <tr><td class="fn">getStallsByEmail($db, $email)</td><td>Stalls sharing an email</td></tr>
+  <tr><td class="fn">assertUniqueStallPasswordForEmail(...)</td><td>Enforce unique password per email</td></tr>
+  <tr><td class="fn">authenticateStall($db, $email, $password)</td><td>Verify stall credentials</td></tr>
+  <tr><td class="fn">establishStallSession($stall)</td><td>Set stall session fields</td></tr>
+  <tr><td class="fn">clearTerminalSession()</td><td>Clear stall/PIN unlock session state</td></tr>
+  <tr><td class="fn">getAllStalls($db)</td><td>List all stalls for admin</td></tr>
+  <tr><td class="fn">createStall($db, $name, $email, $password)</td><td>Add stall login</td></tr>
+  <tr><td class="fn">resetStallPassword($db, $stallId, $password)</td><td>Reset stall password</td></tr>
+  <tr><td class="fn">deleteStall($db, $stallId)</td><td>Delete stall record</td></tr>
+  <tr><td class="fn">redirectIfAuthenticated()</td><td>Bounce already-logged users off login pages</td></tr>
+  <tr><td class="fn">safeRedirect($path)</td><td>HTTP 303 redirect and exit</td></tr>
+  <tr><td class="fn">dispatchMagicLinkEmail($email, $token)</td><td>Queue/send magic link (Windows-safe)</td></tr>
+  <tr><td class="fn">sendMagicLinkEmail($email, $token)</td><td>Compose and send magic-link message</td></tr>
+</table>
+
+<div class="pagebreak"></div>
+
+<h3>6.7 Customers &amp; online sales</h3>
+<table>
+  <tr><th>Function</th><th>Purpose</th></tr>
+  <tr><td class="fn">ensureCustomerSchema($db)</td><td>Customers, customer_tickets, payment_pending, ticket columns</td></tr>
+  <tr><td class="fn">isCustomerAuthenticated()</td><td>Customer session check</td></tr>
+  <tr><td class="fn">requireCustomerAuth()</td><td>Redirect to login if not customer</td></tr>
+  <tr><td class="fn">getCustomerByEmail($db, $email)</td><td>Load customer row</td></tr>
+  <tr><td class="fn">registerCustomer($db, $name, $email, $password)</td><td>Create or claim guest stub account</td></tr>
+  <tr><td class="fn">authenticateCustomer($db, $email, $password)</td><td>Verify customer password</td></tr>
+  <tr><td class="fn">establishCustomerSession($customer)</td><td>Set customer session</td></tr>
+  <tr><td class="fn">clearCustomerSession()</td><td>Log out customer</td></tr>
+  <tr><td class="fn">countAvailableTicketsForTier(...)</td><td>Vault tickets left for online sale</td></tr>
+  <tr><td class="fn">getEventsAvailableForPurchase($db)</td><td>Public/buy catalog of events with stock</td></tr>
+  <tr><td class="fn">getOrCreateCustomerForPurchase(...)</td><td>Ensure customer row for checkout email</td></tr>
+  <tr><td class="fn">assignTicket(...)</td><td>Assign vault ticket after payment (idempotent)</td></tr>
+  <tr><td class="fn">enrichAssignTicketResult(...)</td><td>Attach event/tier names to assign result</td></tr>
+  <tr><td class="fn">fulfillOnlineTicketPurchase(...)</td><td>Deprecated wrapper → assignTicket (Stripe)</td></tr>
+  <tr><td class="fn">fulfillStripeCheckoutSession($db, $session)</td><td>Fulfill paid Stripe Checkout session</td></tr>
+  <tr><td class="fn">getCustomerTicketsWithDetails($db, $customerId)</td><td>Tickets + benefits for dashboard</td></tr>
+  <tr><td class="fn">getAllCustomersWithStats($db)</td><td>Admin customers table</td></tr>
+  <tr><td class="fn">getOnlineSalesByGateway($db, $eventId)</td><td>Sales breakdown by payment gateway</td></tr>
+  <tr><td class="fn">sendTicketPurchaseEmail(...)</td><td>Email QR / ticket confirmation</td></tr>
+</table>
+
+<h3>6.8 Stripe &amp; eSewa</h3>
+<table>
+  <tr><th>Function</th><th>Purpose</th></tr>
+  <tr><td class="fn">getStripeCurrency()</td><td>Checkout currency (default npr)</td></tr>
+  <tr><td class="fn">getStripeClient()</td><td>Stripe client or null if keys invalid/placeholder</td></tr>
+  <tr><td class="fn">isDevCheckoutEnabled()</td><td>APP_DEBUG=1 enables test purchase</td></tr>
+  <tr><td class="fn">getEsewaMerchantCode()</td><td>Merchant code (sandbox default in debug)</td></tr>
+  <tr><td class="fn">getEsewaSecretKey()</td><td>eSewa signing secret</td></tr>
+  <tr><td class="fn">isEsewaConfigured()</td><td>Whether eSewa can be used</td></tr>
+  <tr><td class="fn">getEsewaFormUrl()</td><td>Sandbox or live eSewa form URL</td></tr>
+  <tr><td class="fn">generateEsewaTransactionUuid()</td><td>Unique payment UUID</td></tr>
+  <tr><td class="fn">generateEsewaSignature(...)</td><td>HMAC signature for form POST</td></tr>
+  <tr><td class="fn">verifyEsewaResponseSignature(...)</td><td>Verify callback signature</td></tr>
+  <tr><td class="fn">createPendingPurchase(...)</td><td>Store pending eSewa checkout context</td></tr>
+  <tr><td class="fn">getPendingPurchase($db, $uuid)</td><td>Load pending row by UUID</td></tr>
+  <tr><td class="fn">buildEsewaPaymentForm(...)</td><td>Signed fields for browser redirect to eSewa</td></tr>
+  <tr><td class="fn">fulfillEsewaPayment($db, $callbackData)</td><td>Assign ticket after successful eSewa payment</td></tr>
+</table>
+
+<h2>7. Key page / API endpoints (behavior)</h2>
+<table>
+  <tr><th>Endpoint</th><th>Behavior</th></tr>
+  <tr><td class="mono">auth.php</td><td>JSON auth actions: request magic link, stall login, PIN unlock, lock terminal</td></tr>
+  <tr><td class="mono">api.php</td><td>Scan / ticket API used by terminal</td></tr>
+  <tr><td class="mono">create_checkout_session.php</td><td>Start Stripe Checkout (requires customer login)</td></tr>
+  <tr><td class="mono">esewa_initiate.php</td><td>Build eSewa payload (requires customer login)</td></tr>
+  <tr><td class="mono">esewa_callback.php</td><td>Verify eSewa return → assign ticket</td></tr>
+  <tr><td class="mono">stripe_webhook.php</td><td>Stripe webhook fulfillment</td></tr>
+  <tr><td class="mono">dev_purchase.php</td><td>Local fake payment when APP_DEBUG=1</td></tr>
+  <tr><td class="mono">upgrade_schema.php</td><td>CLI/safe schema upgrades (stalls + customers)</td></tr>
+  <tr><td class="mono">migrate.php</td><td>Migration helper script</td></tr>
+</table>
+
+<h2>8. Data model (high level)</h2>
+<ul>
+  <li><strong>events</strong> → <strong>tiers</strong> → <strong>benefits</strong></li>
+  <li><strong>tickets</strong> (vault / allocated / sold online; optional customer_id)</li>
+  <li><strong>distributors</strong>, <strong>stalls</strong>, <strong>scans</strong></li>
+  <li><strong>customers</strong>, <strong>customer_tickets</strong>, <strong>payment_pending</strong></li>
+  <li><strong>login_tokens</strong> for admin/distributor magic links</li>
+</ul>
+
+<h2>9. Design system</h2>
+<ul>
+  <li>File: <span class="mono">assets/css/passgate.css</span></li>
+  <li>Look: bright white surfaces, blue accent (#2563eb), Manrope + Sora fonts</li>
+  <li>Status colors: green (ok), amber (warn), red (deny)</li>
+  <li>Shared components: buttons, cards, empty states, admin tables, shop/landing layouts</li>
+</ul>
+
+<h2>10. Local development notes</h2>
+<ul>
+  <li>URL: <span class="mono">http://localhost:8000</span></li>
+  <li>Admin email (local): <span class="mono">yunaadhi1@gmail.com</span></li>
+  <li>With APP_DEBUG=1, magic links and some mail go to <span class="mono">dev_login.log</span></li>
+  <li>Git branches observed: <span class="mono">main</span>, <span class="mono">ashra</span>, <span class="mono">yuna</span></li>
+  <li>Do not commit <span class="mono">.env</span>, logs, or <span class="mono">vendor/</span></li>
+</ul>
+
+<h2>11. Document purpose</h2>
+<p>This <strong>InfopassGate</strong> file summarizes what PassGate is, what was implemented in this collaboration (setup, UI redesign, payments, navigation/product rules), and lists every shared PHP function with its role—for 8th semester project documentation.</p>
+
+<p class="meta" style="margin-top:28px;border-top:1px solid #cbd5e1;padding-top:10px;">
+  End of InfopassGate document · PassGate project · August 2026
+</p>
+
+</body>
+</html>
