@@ -157,12 +157,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sEmail = strtolower(trim($_POST['s_email'] ?? ''));
         $sPassword = (string) ($_POST['s_password'] ?? '');
         $sPasswordConfirm = (string) ($_POST['s_password_confirm'] ?? '');
+        $sCategory = resolveCategorySelection(
+            trim($_POST['s_category'] ?? ''),
+            trim($_POST['s_category_custom'] ?? '')
+        );
 
         if ($sPassword !== $sPasswordConfirm) {
             $_SESSION['stall_flash_error'] = 'Passwords do not match.';
         } else {
             try {
-                $newId = createStall($db, $sName, $sEmail, $sPassword);
+                $newId = createStall($db, $sName, $sEmail, $sPassword, $sCategory);
                 auditLog('CRM', "Added stall {$sName} (id {$newId})");
             } catch (Throwable $e) {
                 $_SESSION['stall_flash_error'] = $e->getMessage();
@@ -240,6 +244,8 @@ $recentScansStmt->execute(['event_id' => $eventId]);
 $recentScans = $recentScansStmt->fetchAll();
 
 $stalls = getAllStalls($db);
+$benefitCategories = getBenefitCategoryOptions($db);
+$scansByCategory = getScansByCategory($db, $eventId);
 $customers = getAllCustomersWithStats($db);
 $stallFlashError = $_SESSION['stall_flash_error'] ?? '';
 unset($_SESSION['stall_flash_error']);
@@ -673,16 +679,54 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
 
     <div class="pg-form-panel">
         <h4>Add New Stall</h4>
-        <p class="pg-form-hint">Example: benefit <strong>Lunch</strong> → stall named <strong>Lunch</strong>. Multiple stalls can share one email if each has a different password.</p>
-        <form method="POST" class="pg-form-grid">
+        <p class="pg-form-hint">Pick a category that matches the benefits this stall serves. Categories come from event benefits; you can add a new one if needed.</p>
+        <form method="POST" class="pg-form-grid" id="add-stall-form">
             <input type="hidden" name="global_action" value="add_stall">
-            <div class="pg-field"><label>Stall Name</label><input type="text" name="s_name" required placeholder="Lunch"></div>
+            <div class="pg-field"><label>Stall Name</label><input type="text" name="s_name" required placeholder="Bar Station"></div>
+            <div class="pg-field pg-category-picker">
+                <label for="s_category">Category</label>
+                <select name="s_category" id="s_category" class="pg-category-custom-select" required>
+                    <option value="">Select category…</option>
+                    <?php foreach ($benefitCategories as $cat): ?>
+                        <option value="<?php echo htmlspecialchars($cat); ?>"><?php echo htmlspecialchars(ucfirst($cat)); ?></option>
+                    <?php endforeach; ?>
+                    <option value="__new__">+ Add new category…</option>
+                </select>
+                <div class="pg-category-picker__custom" id="s_category_custom_wrap" data-custom-wrap>
+                    <label for="s_category_custom" class="pg-category-picker__label" style="margin-top:0.25rem;">New category name</label>
+                    <input type="text" name="s_category_custom" id="s_category_custom" class="pg-category-custom"
+                           maxlength="50" placeholder="e.g. drink, food, merch" disabled>
+                </div>
+            </div>
             <div class="pg-field"><label>Email</label><input type="email" name="s_email" required placeholder="stall@event.com"></div>
             <div class="pg-field"><label>Password</label><input type="password" name="s_password" required minlength="6"></div>
             <div class="pg-field"><label>Confirm Password</label><input type="password" name="s_password_confirm" required minlength="6"></div>
             <button type="submit" class="btn btn-success">Add Stall</button>
         </form>
     </div>
+
+    <script src="assets/js/category-picker.js"></script>
+    <script>
+    (function () {
+      const INITIAL_CATEGORIES = <?php echo json_encode($benefitCategories, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+      PGCategories.init(INITIAL_CATEGORIES);
+
+      const stallForm = document.getElementById('add-stall-form');
+      const stallSelect = document.getElementById('s_category');
+      if (stallSelect) {
+        PGCategories.rebuildSelect(stallSelect, stallSelect.value || '');
+      }
+
+      PGCategories.bindForm(stallForm, '#s_category');
+
+      stallForm?.addEventListener('submit', (e) => {
+        if (!PGCategories.commitPending('#s_category')) {
+          e.preventDefault();
+          alert('Enter a name for the new category.');
+        }
+      });
+    })();
+    </script>
 
     <?php if ($stalls === []): ?>
         <div class="pg-empty">
@@ -692,12 +736,13 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
         </div>
     <?php else: ?>
         <table>
-            <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Created At</th><th>Actions</th></tr></thead>
+            <thead><tr><th>ID</th><th>Name</th><th>Category</th><th>Email</th><th>Created At</th><th>Actions</th></tr></thead>
             <tbody>
                 <?php foreach ($stalls as $stall): ?>
                     <tr>
                         <td><?php echo (int) $stall['id']; ?></td>
                         <td><strong><?php echo htmlspecialchars($stall['name']); ?></strong></td>
+                        <td><?php echo htmlspecialchars($stall['category'] !== '' ? ucfirst((string) $stall['category']) : '—'); ?></td>
                         <td><?php echo htmlspecialchars($stall['email']); ?></td>
                         <td><?php echo htmlspecialchars($stall['created_at']); ?></td>
                         <td style="white-space:nowrap;">
@@ -857,6 +902,22 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
                         <td><strong><?php echo htmlspecialchars(ucfirst($gw['payment_gateway'])); ?></strong></td>
                         <td><?php echo (int) $gw['sale_count']; ?></td>
                         <td><?php echo formatPrice($gw['revenue']); ?></td>
+                    </tr>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </tbody>
+    </table>
+    <h3 style="margin-top:1.5rem;">Scans by Benefit Category</h3>
+    <table style="margin-bottom:1.25rem;">
+        <thead><tr><th>Category</th><th>Scans</th></tr></thead>
+        <tbody>
+            <?php if ($scansByCategory === []): ?>
+                <tr><td colspan="2">No scans recorded yet.</td></tr>
+            <?php else: ?>
+                <?php foreach ($scansByCategory as $catRow): ?>
+                    <tr>
+                        <td><strong><?php echo htmlspecialchars(ucfirst($catRow['category'])); ?></strong></td>
+                        <td><?php echo (int) $catRow['scan_count']; ?></td>
                     </tr>
                 <?php endforeach; ?>
             <?php endif; ?>

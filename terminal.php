@@ -16,9 +16,9 @@ if (!isStallAuthenticated()) {
 }
 
 $event_name = 'PassGate';
-$scan_benefits_list = [];
 $stall_name = (string) ($_SESSION['stall_name'] ?? '');
 $stall_email = (string) ($_SESSION['stall_email'] ?? '');
+$stall_category = (string) ($_SESSION['stall_category'] ?? '');
 $show_welcome = isset($_GET['welcome']);
 
 try {
@@ -27,12 +27,9 @@ try {
     if ($terminal_event_id !== null) {
         $event_name = getCurrentEventName($db, $terminal_event_id);
     }
-    $scan_benefits_list = getDistinctBenefitNames($db, null);
 } catch (Throwable $e) {
     // Database not configured yet
 }
-
-$has_scan_benefits = $scan_benefits_list !== [];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -123,6 +120,11 @@ HTML
         <?php if ($stall_email !== ''): ?>
         <p class="pg-faint" style="margin:0.15rem 0 0;font-size:0.68rem;"><?php echo htmlspecialchars($stall_email); ?></p>
         <?php endif; ?>
+        <?php if ($stall_category !== ''): ?>
+        <p class="pg-faint" style="margin:0.1rem 0 0;font-size:0.65rem;text-transform:capitalize;">
+          Category: <?php echo htmlspecialchars($stall_category); ?>
+        </p>
+        <?php endif; ?>
       </div>
     </div>
     <button type="button" onclick="terminateSessionLogout()" class="pg-btn pg-btn--ghost pg-btn--sm" style="min-height:2.4rem;min-width:4.2rem;">
@@ -148,27 +150,17 @@ HTML
     </div>
 
     <div id="panel-scan">
-    <div id="benefit-select-panel" class="pg-panel<?php echo $has_scan_benefits ? '' : ' pg-benefit-panel is-disabled'; ?>">
+    <div id="benefit-select-panel" class="pg-panel pg-benefit-panel is-disabled">
       <label for="scan-benefit-select" class="pg-label">Benefit to redeem</label>
-      <p class="pg-faint" style="margin:0 0 0.55rem;font-size:0.75rem;">Select drink, food, or entry type before scanning.</p>
-      <?php if ($has_scan_benefits): ?>
-        <select id="scan-benefit-select" class="pg-select pg-select--scan">
-          <option value="">Select benefit…</option>
-          <?php foreach ($scan_benefits_list as $benefit): ?>
-            <option value="<?php echo htmlspecialchars($benefit, ENT_QUOTES); ?>"><?php echo htmlspecialchars($benefit); ?></option>
-          <?php endforeach; ?>
-        </select>
-      <?php else: ?>
-        <div class="pg-alert" id="no-benefits-msg">
-          No benefits configured yet. Add tiers with benefits in the admin setup before scanning.
-        </div>
-        <select id="scan-benefit-select" class="pg-select pg-select--scan hidden" disabled aria-hidden="true">
-          <option value="">Select benefit…</option>
-        </select>
-      <?php endif; ?>
+      <p id="benefit-panel-hint" class="pg-faint" style="margin:0 0 0.55rem;font-size:0.75rem;">Scan or enter a ticket ID to load benefits for that tier.</p>
+      <div class="pg-alert hidden" id="no-benefits-msg" style="margin-bottom:0.55rem;"></div>
+      <p id="benefit-tier-meta" class="pg-faint hidden" style="margin:0 0 0.45rem;font-size:0.72rem;font-weight:600;"></p>
+      <select id="scan-benefit-select" class="pg-select pg-select--scan" disabled>
+        <option value="">Select benefit…</option>
+      </select>
     </div>
 
-    <div class="pg-scanner<?php echo $has_scan_benefits ? '' : ' pg-benefit-panel is-disabled'; ?>" id="scanner-panel">
+    <div class="pg-scanner" id="scanner-panel">
       <div id="scanner-view-element" style="width:100%;height:100%;"></div>
       <div id="video-placeholder" class="pg-scanner__placeholder">
         <i class="fa-solid fa-qrcode" style="font-size:2rem;color:#2563eb;margin-bottom:0.75rem;"></i>
@@ -177,7 +169,7 @@ HTML
       </div>
     </div>
 
-    <div class="pg-panel<?php echo $has_scan_benefits ? '' : ' pg-benefit-panel is-disabled'; ?>" id="manual-panel">
+    <div class="pg-panel" id="manual-panel">
       <p class="pg-section-title" style="margin-bottom:0.55rem;">Or type ticket ID</p>
       <div class="pg-manual-row">
         <input type="text" id="manual-ticket-id" class="pg-input" placeholder="Ticket ID" autocomplete="off" enterkeyhint="go">
@@ -259,12 +251,13 @@ HTML
     let flashTimer = null;
     const BASE_URL = window.location.origin + window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/'));
     const STALL_NAME = <?php echo json_encode($stall_name); ?>;
+    const STALL_CATEGORY = <?php echo json_encode($stall_category); ?>;
     const SHOW_WELCOME = <?php echo $show_welcome ? 'true' : 'false'; ?>;
-    const HAS_SCAN_BENEFITS = <?php echo $has_scan_benefits ? 'true' : 'false'; ?>;
+    let loadedTicketId = null;
+    let tierHasBenefits = false;
 
     document.addEventListener('DOMContentLoaded', () => {
       localStorage.setItem('passgate_auth', 'stall');
-      preselectBenefitMatch(STALL_NAME);
       if (SHOW_WELCOME) {
         showToast(`Welcome, ${STALL_NAME}`, 'success');
       }
@@ -286,9 +279,146 @@ HTML
       return el ? el.value.trim() : '';
     }
 
+    function normalizeTicketId(ticketId) {
+      let cleanedId = ticketId.trim();
+      if (/^\d+$/.test(cleanedId)) cleanedId = cleanedId.padStart(6, '0');
+      return cleanedId;
+    }
+
+    function setBenefitPanelEnabled(enabled) {
+      document.getElementById('benefit-select-panel')?.classList.toggle('is-disabled', !enabled);
+      const sel = document.getElementById('scan-benefit-select');
+      if (sel) sel.disabled = !enabled;
+    }
+
+    function setScanControlsEnabled(enabled) {
+      document.getElementById('scanner-panel')?.classList.toggle('pg-benefit-panel', !enabled);
+      document.getElementById('scanner-panel')?.classList.toggle('is-disabled', !enabled);
+      document.getElementById('manual-panel')?.classList.toggle('pg-benefit-panel', !enabled);
+      document.getElementById('manual-panel')?.classList.toggle('is-disabled', !enabled);
+      const cameraBtn = document.getElementById('camera-trigger-btn');
+      if (cameraBtn) cameraBtn.disabled = !enabled;
+      const manualInput = document.getElementById('manual-ticket-id');
+      const manualBtn = document.querySelector('#manual-panel .pg-btn--process');
+      if (manualInput) manualInput.disabled = !enabled;
+      if (manualBtn) manualBtn.disabled = !enabled;
+    }
+
+    function clearBenefitDropdown() {
+      const sel = document.getElementById('scan-benefit-select');
+      if (!sel) return;
+      sel.innerHTML = '<option value="">Select benefit…</option>';
+      sel.value = '';
+      sel.disabled = true;
+      loadedTicketId = null;
+      tierHasBenefits = false;
+      document.getElementById('benefit-tier-meta')?.classList.add('hidden');
+      document.getElementById('no-benefits-msg')?.classList.add('hidden');
+      setBenefitPanelEnabled(false);
+    }
+
+    function populateBenefitDropdown(benefits, meta) {
+      const sel = document.getElementById('scan-benefit-select');
+      const msg = document.getElementById('no-benefits-msg');
+      const metaEl = document.getElementById('benefit-tier-meta');
+      if (!sel) return;
+
+      sel.innerHTML = '<option value="">Select benefit…</option>';
+      benefits.forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = b.name;
+        opt.textContent = b.name;
+        opt.dataset.benefitId = String(b.id);
+        sel.appendChild(opt);
+      });
+      sel.disabled = false;
+      tierHasBenefits = benefits.length > 0;
+      setBenefitPanelEnabled(tierHasBenefits);
+
+      if (metaEl && meta) {
+        const parts = [meta.event_name, meta.tier_name].filter(Boolean);
+        metaEl.textContent = parts.join(' · ');
+        metaEl.classList.toggle('hidden', parts.length === 0);
+      }
+
+      if (msg) {
+        msg.classList.add('hidden');
+        msg.textContent = '';
+      }
+
+      preselectBenefitMatch(STALL_NAME);
+    }
+
+    function showNoBenefitsMessage(message, disableScanning = true) {
+      const msg = document.getElementById('no-benefits-msg');
+      const metaEl = document.getElementById('benefit-tier-meta');
+      clearBenefitDropdown();
+      tierHasBenefits = false;
+      if (disableScanning) {
+        setScanControlsEnabled(false);
+      } else {
+        setScanControlsEnabled(true);
+      }
+      if (msg) {
+        msg.textContent = message;
+        msg.classList.remove('hidden');
+      }
+      if (metaEl) metaEl.classList.add('hidden');
+      document.getElementById('benefit-select-panel')?.classList.remove('is-disabled');
+    }
+
+    async function fetchBenefitsForTicket(ticketId) {
+      const cleanedId = normalizeTicketId(ticketId);
+      let url = `${BASE_URL}/api.php?action=get_benefits&ticket_id=${encodeURIComponent(cleanedId)}`;
+      if (STALL_CATEGORY) {
+        url += `&stall_category=${encodeURIComponent(STALL_CATEGORY)}`;
+      }
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok || data.status !== 'success') {
+        throw new Error(data.message || 'Ticket not found');
+      }
+      return { cleanedId, payload: data.data };
+    }
+
+    async function prepareTicketScan(ticketId) {
+      const cleanedId = normalizeTicketId(ticketId);
+      if (loadedTicketId === cleanedId && tierHasBenefits) {
+        setScanControlsEnabled(true);
+        return true;
+      }
+
+      setScanControlsEnabled(true);
+      clearBenefitDropdown();
+      loadedTicketId = cleanedId;
+
+      try {
+        const { payload } = await fetchBenefitsForTicket(cleanedId);
+        const benefits = payload.benefits || [];
+
+        if (benefits.length === 0) {
+          const msg = STALL_CATEGORY
+            ? 'No benefits available for your stall for this ticket.'
+            : 'No benefits available for this ticket\'s tier.';
+          showNoBenefitsMessage(msg);
+          showToast(msg, 'error');
+          return false;
+        }
+
+        populateBenefitDropdown(benefits, payload);
+        document.getElementById('benefit-panel-hint').textContent = 'Choose the benefit to redeem for this ticket.';
+        return true;
+      } catch (err) {
+        loadedTicketId = null;
+        showNoBenefitsMessage(err.message || 'Ticket not found.', false);
+        showToast(err.message || 'Ticket not found', 'error');
+        return false;
+      }
+    }
+
     function requireBenefitSelected() {
-      if (!HAS_SCAN_BENEFITS) {
-        showToast('No benefits configured — contact admin', 'error');
+      if (!tierHasBenefits) {
+        showToast('Load a ticket first to see available benefits', 'error');
         return false;
       }
       const benefit = getSelectedBenefit();
@@ -302,18 +432,37 @@ HTML
 
     function preselectBenefitMatch(label) {
       const sel = document.getElementById('scan-benefit-select');
-      if (!sel || !label) return;
+      if (!sel || !label) return false;
       const norm = label.trim().toLowerCase();
       for (const opt of sel.options) {
         if (opt.value && opt.value.toLowerCase() === norm) {
           sel.value = opt.value;
-          return;
+          return true;
         }
       }
+      return false;
+    }
+
+    async function onTicketCaptured(ticketId) {
+      if (!ticketId.trim()) return;
+      const ready = await prepareTicketScan(ticketId);
+      if (!ready) return;
+
+      if (getSelectedBenefit()) {
+        executeScanTransaction(normalizeTicketId(ticketId));
+        return;
+      }
+
+      showToast('Select a benefit to redeem', 'warn');
+      document.getElementById('scan-benefit-select')?.focus();
     }
 
     document.getElementById('manual-ticket-id').addEventListener('keypress', (e) => { if (e.key === 'Enter') processManualScan(); });
     document.getElementById('status-ticket-id')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') lookupTicketStatus(); });
+    document.getElementById('scan-benefit-select')?.addEventListener('change', () => {
+      if (!loadedTicketId || !getSelectedBenefit()) return;
+      executeScanTransaction(loadedTicketId);
+    });
 
     function stopCameraEngineImmediate() {
       if (html5QrcodeScanner && html5QrcodeScanner.isScanning) {
@@ -358,7 +507,6 @@ HTML
         window.location.replace(`${BASE_URL}/staff_login.php?next=terminal.php`);
         return;
       }
-      if (!requireBenefitSelected()) return;
       try {
         await loadHtml5QrcodeLibrary();
       } catch (err) {
@@ -376,7 +524,7 @@ HTML
       html5QrcodeScanner.start(
         { facingMode: 'environment' },
         config,
-        (decodedText) => { stopCameraEngineImmediate(); executeScanTransaction(decodedText); },
+        (decodedText) => { stopCameraEngineImmediate(); onTicketCaptured(decodedText); },
         () => {}
       ).catch(() => {
         showToast('Camera blocked — use ticket ID below', 'error');
@@ -521,6 +669,7 @@ HTML
             document.getElementById('audit-stall-row').classList.add('hidden');
           }
           renderBenefitsUsagePanel(data);
+          resetScanFormForNextGuest();
         } else {
           throw new Error(data.message || 'An error occurred');
         }
@@ -536,6 +685,13 @@ HTML
         document.getElementById('audit-dist').innerText = 'N/A';
         document.getElementById('audit-logs-box').innerHTML = '<div class="pg-faint" style="font-style:italic;padding:0.4rem;">No matching ticket.</div>';
       });
+    }
+
+    function resetScanFormForNextGuest() {
+      document.getElementById('manual-ticket-id').value = '';
+      document.getElementById('benefit-panel-hint').textContent = 'Scan or enter a ticket ID to load benefits for that tier.';
+      clearBenefitDropdown();
+      setScanControlsEnabled(true);
     }
 
     function renderBenefitsUsagePanel(data) {
@@ -608,12 +764,13 @@ HTML
       }, 3500);
     }
 
-    function processManualScan() {
+    async function processManualScan() {
       const el = document.getElementById('manual-ticket-id');
       if (!el.value.trim()) return;
-      if (!requireBenefitSelected()) return;
-      executeScanTransaction(el.value.trim());
-      el.value = '';
+      await onTicketCaptured(el.value.trim());
+      if (loadedTicketId && getSelectedBenefit()) {
+        el.value = '';
+      }
     }
   </script>
 </body>

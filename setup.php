@@ -17,6 +17,8 @@ if (
 }
 
 $db = getDb();
+ensureCategorySchema($db);
+$benefitCategoryOptions = getBenefitCategoryOptions($db);
 
 $is_confirmation_stage = false;
 
@@ -49,8 +51,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['confirmed'])) {
                 foreach ($payload['benefit_name'][$tIdx] as $bIdx => $bName) {
                     if (!empty($bName)) {
                         $tier['benefits'][] = [
-                            'name' => $bName,
-                            'max'  => (int) ($payload['benefit_max'][$tIdx][$bIdx] ?? 1),
+                            'name'     => $bName,
+                            'max'      => (int) ($payload['benefit_max'][$tIdx][$bIdx] ?? 1),
+                            'category' => resolveCategorySelection(
+                                (string) ($payload['benefit_category'][$tIdx][$bIdx] ?? ''),
+                                (string) ($payload['benefit_category_custom'][$tIdx][$bIdx] ?? 'general')
+                            ),
                         ];
                     }
                 }
@@ -149,8 +155,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['confirmed'])) {
 }
 .tier-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem; }
 .tier-header h3 { margin: 0; font-family: var(--pg-display); font-size: 1.05rem; color: var(--pg-text); }
-.benefit-row { display: flex; gap: 0.55rem; margin-top: 0.55rem; align-items: center; }
+.benefit-row { display: flex; gap: 0.55rem; margin-top: 0.55rem; align-items: flex-end; flex-wrap: wrap; }
 .benefit-row input { margin-top: 0 !important; }
+.benefit-row select { margin-top: 0 !important; }
+.pg-category-picker { display: grid; gap: 0.35rem; min-width: 8.5rem; }
+.pg-category-picker__label {
+  font-size: 0.65rem; font-weight: 800; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--pg-text-muted);
+}
+.pg-category-picker select,
+.pg-category-picker input[type="text"] {
+  width: 100%; margin-top: 0 !important;
+  padding: 0.65rem 0.75rem; border-radius: var(--pg-radius-sm);
+  border: 1.5px solid #e2e8f0; background: #fff;
+  font: inherit; font-weight: 600; box-sizing: border-box;
+}
+.pg-category-picker__custom {
+  display: none;
+  margin-top: 0.35rem;
+}
+.pg-category-picker__custom.is-open {
+  display: block;
+}
 .confirm-box {
   margin-top: 1rem;
   padding: 1.1rem;
@@ -205,7 +231,13 @@ CSS
                                 if (isset($payload['benefit_name'][$tIdx])):
                                     foreach ($payload['benefit_name'][$tIdx] as $bIdx => $bName):
                                         if (empty($bName)) continue;
-                                        echo '<li>' . htmlspecialchars($bName) . ' (max: ' . (int) $payload['benefit_max'][$tIdx][$bIdx] . ')</li>';
+                                        $displayCategory = resolveCategorySelection(
+                                            (string) ($payload['benefit_category'][$tIdx][$bIdx] ?? ''),
+                                            (string) ($payload['benefit_category_custom'][$tIdx][$bIdx] ?? 'general')
+                                        );
+                                        echo '<li>' . htmlspecialchars($bName)
+                                            . ' [' . htmlspecialchars($displayCategory !== '' ? $displayCategory : 'general')
+                                            . '] (max: ' . (int) $payload['benefit_max'][$tIdx][$bIdx] . ')</li>';
                                     endforeach;
                                 endif;
                                 ?>
@@ -242,9 +274,29 @@ CSS
     </div>
 </div>
 
+<script src="assets/js/category-picker.js"></script>
 <script>
 let tierCounter = 0;
 const oldPayload = <?php echo json_encode($payload); ?>;
+const EXISTING_CATEGORIES = <?php echo json_encode($benefitCategoryOptions, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+
+function escapeAttr(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}
+
+function buildCategorySelectHtml(tierIndex, benefitIndex, selected = '') {
+  const normalized = PGCategories.slugify(selected);
+  if (normalized) PGCategories.add(normalized);
+  return `
+    <div class="pg-category-picker" style="flex:1.5;min-width:9rem;">
+      <span class="pg-category-picker__label">Category</span>
+      <select name="benefit_category[${tierIndex}][${benefitIndex}]" class="benefit-category-select pg-category-custom-select" required>${PGCategories.buildOptions(normalized)}</select>
+      <div class="pg-category-picker__custom" data-custom-wrap>
+        <input type="text" name="benefit_category_custom[${tierIndex}][${benefitIndex}]" class="pg-category-custom benefit-category-custom"
+               placeholder="New category name" maxlength="50" disabled>
+      </div>
+    </div>`;
+}
 
 function addTicketTier(savedName = '', savedQty = '', savedPrice = '', savedBenefits = null) {
     const container = document.getElementById('tier-container');
@@ -262,26 +314,34 @@ function addTicketTier(savedName = '', savedQty = '', savedPrice = '', savedBene
                 <div style="flex:1;min-width:90px;"><label>Qty</label><input type="number" name="tier_qty[${tierIndex}]" class="tier-qty-input" required value="${savedQty}" oninput="validateFormState()"></div>
                 <div style="flex:1;min-width:110px;"><label>Price (NRS)</label><input type="text" name="tier_price[${tierIndex}]" required value="${savedPrice}" placeholder="1999.00"></div>
             </div>
-            <p class="pg-section-title" style="margin-top:1rem;">Benefits (stall names)</p>
+            <p class="pg-section-title" style="margin-top:1rem;">Benefits</p>
             <div id="benefit_container_${tierIndex}"></div>
             <button type="button" class="pg-btn pg-btn--ghost pg-btn--sm" style="margin-top:0.55rem;" onclick="addBenefitRow(${tierIndex})">+ Add benefit</button>
         </div>`);
     if (savedBenefits && savedBenefits.names.length > 0) {
-        savedBenefits.names.forEach((n, i) => addBenefitRow(tierIndex, n, savedBenefits.maxes[i]));
+        savedBenefits.names.forEach((n, i) => addBenefitRow(tierIndex, n, savedBenefits.maxes[i], savedBenefits.categories[i] || ''));
     } else {
         addBenefitRow(tierIndex);
     }
     validateFormState();
 }
 
-function addBenefitRow(tierIndex, bName = '', bMax = '') {
+function addBenefitRow(tierIndex, bName = '', bMax = '', bCategory = '') {
     const container = document.getElementById(`benefit_container_${tierIndex}`);
     const benefitIndex = container.children.length;
+    const categoryHtml = buildCategorySelectHtml(tierIndex, benefitIndex, bCategory);
     container.insertAdjacentHTML('beforeend', `
         <div class="benefit-row" id="benefit_row_${tierIndex}_${benefitIndex}">
-            <input type="text" name="benefit_name[${tierIndex}][${benefitIndex}]" required value="${bName}" placeholder="Lunch" style="flex:3;">
-            <input type="number" name="benefit_max[${tierIndex}][${benefitIndex}]" class="benefit-max-input" required value="${bMax}" placeholder="Max" style="flex:1.2;" oninput="validateFormState()">
-            <button type="button" class="pg-btn pg-btn--ghost pg-btn--sm" style="color:var(--pg-deny);border-color:var(--pg-deny-border);" onclick="removeElement('benefit_row_${tierIndex}_${benefitIndex}')">X</button>
+            <div style="flex:2.2;min-width:8rem;">
+              <span class="pg-category-picker__label">Benefit name</span>
+              <input type="text" name="benefit_name[${tierIndex}][${benefitIndex}]" required value="${escapeAttr(bName)}" placeholder="Beer token" style="width:100%;margin-top:0.35rem !important;">
+            </div>
+            ${categoryHtml}
+            <div style="flex:0.9;min-width:4rem;">
+              <span class="pg-category-picker__label">Max uses</span>
+              <input type="number" name="benefit_max[${tierIndex}][${benefitIndex}]" class="benefit-max-input" required value="${bMax || 1}" placeholder="Max" style="width:100%;margin-top:0.35rem !important;" oninput="validateFormState()">
+            </div>
+            <button type="button" class="pg-btn pg-btn--ghost pg-btn--sm" style="color:var(--pg-deny);border-color:var(--pg-deny-border);margin-bottom:0.15rem;" onclick="removeElement('benefit_row_${tierIndex}_${benefitIndex}')">X</button>
         </div>`);
 }
 
@@ -312,14 +372,34 @@ function validateFormState() {
     submitBtn.style.opacity = submitBtn.disabled ? '0.5' : '1';
 }
 
+function resolveCategoryFromPayload(payload, tIdx, bIdx) {
+  const selected = payload.benefit_category?.[tIdx]?.[bIdx] ?? '';
+  const custom = payload.benefit_category_custom?.[tIdx]?.[bIdx] ?? '';
+  if (selected === '__new__') return String(custom).trim();
+  return String(selected).trim();
+}
+
 window.onload = function() {
+    PGCategories.init(EXISTING_CATEGORIES);
+    const setupForm = document.getElementById('setupForm');
+    PGCategories.bindForm(setupForm, '.benefit-category-select');
+    setupForm?.addEventListener('submit', (e) => {
+      if (!PGCategories.commitPending('.benefit-category-select')) {
+        e.preventDefault();
+        alert('Enter a name for each new benefit category.');
+      }
+    });
+
     if (oldPayload && oldPayload.tier_name) {
         Object.keys(oldPayload.tier_name).forEach(key => {
-            const benefitsData = { names: [], maxes: [] };
+            const benefitsData = { names: [], maxes: [], categories: [] };
             if (oldPayload.benefit_name && oldPayload.benefit_name[key]) {
                 Object.keys(oldPayload.benefit_name[key]).forEach(bKey => {
                     benefitsData.names.push(oldPayload.benefit_name[key][bKey]);
                     benefitsData.maxes.push(oldPayload.benefit_max[key][bKey]);
+                    benefitsData.categories.push(
+                        resolveCategoryFromPayload(oldPayload, key, bKey)
+                    );
                 });
             }
             addTicketTier(oldPayload.tier_name[key], oldPayload.tier_qty[key], oldPayload.tier_price[key], benefitsData);

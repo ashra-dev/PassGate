@@ -89,8 +89,8 @@ $anyGateway = $stripeConfigured || $esewaConfigured || $devCheckout;
                     <?php foreach ($event['tiers'] as $tier): ?>
                         <div class="pg-tier-card">
                             <h3><?php echo htmlspecialchars($tier['name']); ?></h3>
-                            <p class="pg-tier-price"><?php echo formatPrice($tier['price']); ?></p>
-                            <p class="pg-tier-meta"><?php echo (int) $tier['available']; ?> remaining in vault</p>
+                            <p class="pg-tier-price"><?php echo formatPrice($tier['price']); ?> <span class="pg-faint" style="font-size:0.72rem;font-weight:700;">per ticket</span></p>
+                            <p class="pg-tier-meta"><span class="tier-available-count"><?php echo (int) $tier['available']; ?></span> available</p>
 
                             <?php if ($tier['benefits'] !== []): ?>
                                 <ul class="pg-benefit-list">
@@ -104,10 +104,36 @@ $anyGateway = $stripeConfigured || $esewaConfigured || $devCheckout;
                                 </ul>
                             <?php endif; ?>
 
-                            <form class="buy-form" data-event-id="<?php echo (int) $event['id']; ?>" data-tier-id="<?php echo (int) $tier['id']; ?>">
+                            <form class="buy-form"
+                                  data-event-id="<?php echo (int) $event['id']; ?>"
+                                  data-tier-id="<?php echo (int) $tier['id']; ?>"
+                                  data-unit-price="<?php echo htmlspecialchars((string) $tier['price'], ENT_QUOTES); ?>"
+                                  data-available="<?php echo (int) $tier['available']; ?>"
+                                  data-gateway="<?php echo $anyGateway ? '1' : '0'; ?>">
                                 <input type="hidden" name="event_id" value="<?php echo (int) $event['id']; ?>">
                                 <input type="hidden" name="tier_id" value="<?php echo (int) $tier['id']; ?>">
                                 <input type="hidden" name="email" value="<?php echo htmlspecialchars($customerEmail); ?>">
+
+                                <div class="pg-qty-row">
+                                    <div class="pg-qty-control">
+                                        <label for="qty-<?php echo (int) $tier['id']; ?>">Quantity</label>
+                                        <button type="button" class="pg-qty-btn qty-minus" aria-label="Decrease quantity">−</button>
+                                        <input type="number"
+                                               id="qty-<?php echo (int) $tier['id']; ?>"
+                                               name="quantity"
+                                               class="pg-qty-input tier-quantity"
+                                               value="1"
+                                               min="1"
+                                               max="<?php echo (int) $tier['available']; ?>"
+                                               inputmode="numeric">
+                                        <button type="button" class="pg-qty-btn qty-plus" aria-label="Increase quantity">+</button>
+                                    </div>
+                                    <div class="pg-tier-total">
+                                        <span class="pg-tier-total__label">Total</span>
+                                        <span class="pg-tier-total__amount tier-total"><?php echo formatPrice($tier['price']); ?></span>
+                                    </div>
+                                </div>
+                                <p class="pg-qty-error hidden tier-qty-error"></p>
 
                                 <fieldset class="pg-pay-options">
                                     <legend>Payment method</legend>
@@ -147,6 +173,58 @@ $anyGateway = $stripeConfigured || $esewaConfigured || $devCheckout;
 </div>
 <?php passgateRenderPublicFooter(); ?>
 <script>
+function formatMoney(amount) {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return '—';
+  return 'NRS ' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function clampQuantity(form, rawValue) {
+  const available = parseInt(form.dataset.available || '1', 10);
+  let qty = parseInt(String(rawValue), 10);
+  if (!Number.isFinite(qty) || qty < 1) qty = 1;
+  if (qty > available) qty = available;
+  return qty;
+}
+
+function updateTierFormTotals(form) {
+  const qtyInput = form.querySelector('.tier-quantity');
+  const totalEl = form.querySelector('.tier-total');
+  const errEl = form.querySelector('.tier-qty-error');
+  const submitBtn = form.querySelector('button[type="submit"]');
+  const minusBtn = form.querySelector('.qty-minus');
+  const plusBtn = form.querySelector('.qty-plus');
+  const unitPrice = parseFloat(form.dataset.unitPrice || '0');
+  const available = parseInt(form.dataset.available || '1', 10);
+  const qty = clampQuantity(form, qtyInput.value);
+
+  qtyInput.value = String(qty);
+  totalEl.textContent = formatMoney(unitPrice * qty);
+
+  minusBtn.disabled = qty <= 1;
+  plusBtn.disabled = qty >= available;
+
+  const invalid = qty > available || qty < 1;
+  errEl.classList.toggle('hidden', !invalid);
+  errEl.textContent = invalid ? `Only ${available} ticket(s) available.` : '';
+  submitBtn.disabled = invalid || form.dataset.gateway !== '1';
+}
+
+document.querySelectorAll('.buy-form').forEach(form => {
+  const qtyInput = form.querySelector('.tier-quantity');
+  form.querySelector('.qty-minus')?.addEventListener('click', () => {
+    qtyInput.value = String(clampQuantity(form, parseInt(qtyInput.value, 10) - 1));
+    updateTierFormTotals(form);
+  });
+  form.querySelector('.qty-plus')?.addEventListener('click', () => {
+    qtyInput.value = String(clampQuantity(form, parseInt(qtyInput.value, 10) + 1));
+    updateTierFormTotals(form);
+  });
+  qtyInput?.addEventListener('input', () => updateTierFormTotals(form));
+  qtyInput?.addEventListener('change', () => updateTierFormTotals(form));
+  updateTierFormTotals(form);
+});
+
 function submitEsewaForm(payload) {
   const form = document.createElement('form');
   form.method = 'POST';
@@ -172,8 +250,17 @@ document.querySelectorAll('.buy-form').forEach(form => {
     const body = {
       event_id: fd.get('event_id'),
       tier_id: fd.get('tier_id'),
-      email: fd.get('email')
+      email: fd.get('email'),
+      quantity: fd.get('quantity')
     };
+
+    const available = parseInt(form.dataset.available || '1', 10);
+    const qty = clampQuantity(form, body.quantity);
+    if (qty > available) {
+      alert(`Only ${available} ticket(s) available.`);
+      return;
+    }
+    body.quantity = qty;
 
     if (!paymentMethod) {
       alert('Choose a payment method.');

@@ -13,6 +13,7 @@ require_once __DIR__ . '/includes/functions.php';
 try {
     $db = getDb();
     ensureStallsSchema($db);
+    ensureCategorySchema($db);
     ensureCustomerSchema($db);
     echo "SUCCESS: Schema upgrades applied.\n";
 } catch (Throwable $e) {

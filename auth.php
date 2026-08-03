@@ -72,10 +72,11 @@ if ($action === 'stall_login') {
         auditLog('AUTH', "Stall login success: {$stall['name']} ({$email})");
 
         echo json_encode([
-            'status'      => 'success',
-            'stall_id'    => (int) $stall['id'],
-            'stall_name'  => $stall['name'],
-            'stall_email' => $stall['email'],
+            'status'         => 'success',
+            'stall_id'       => (int) $stall['id'],
+            'stall_name'     => $stall['name'],
+            'stall_email'    => $stall['email'],
+            'stall_category' => (string) ($stall['category'] ?? ''),
         ]);
     } catch (Throwable $e) {
         auditLog('AUTH', 'Stall login error: ' . $e->getMessage());
