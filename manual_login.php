@@ -95,7 +95,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </form>
 
             <p class="pg-links" style="margin-top:1rem;">
-                Need a new link? <a href="index.php">Request one from the terminal</a>
+                Need a new link? <a href="terminal.php">Request one from staff login</a>
+                · <a href="index.php">Home</a>
             </p>
         </div>
     </div>
