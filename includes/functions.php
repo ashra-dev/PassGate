@@ -881,9 +881,19 @@ function deleteStall(PDO $db, int $stallId): void
 function resolveScanAuthContext(string $requestedStation): array
 {
     if (isStallAuthenticated()) {
+        $station = trim($requestedStation);
+        if ($station === '') {
+            return [
+                'allowed'  => false,
+                'station'  => '',
+                'stall_id' => null,
+                'message'  => 'Select a benefit before scanning.',
+            ];
+        }
+
         return [
             'allowed'  => true,
-            'station'  => (string) $_SESSION['stall_name'],
+            'station'  => $station,
             'stall_id' => (int) $_SESSION['stall_id'],
         ];
     }

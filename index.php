@@ -13,6 +13,7 @@ if (isDistributorAuthenticated() && ($_SESSION['distributor_role'] ?? '') === 'a
 
 $event_name = 'PassGate';
 $benefits_list = [];
+$scan_benefits_list = [];
 $is_authenticated = isDistributorAuthenticated();
 $is_stall_authenticated = isStallAuthenticated();
 $auth_role = $_SESSION['distributor_role'] ?? '';
@@ -29,9 +30,12 @@ try {
         $event_name = getCurrentEventName($db, $terminal_event_id);
         $benefits_list = getDistinctBenefitNames($db, $terminal_event_id);
     }
+    $scan_benefits_list = getDistinctBenefitNames($db, null);
 } catch (Throwable $e) {
     // Database not configured yet - empty benefits list
 }
+
+$has_scan_benefits = $scan_benefits_list !== [];
 
 $app_debug = env('APP_DEBUG', '0') === '1';
 $smtp_configured = trim(env('MAIL_HOST', '') ?? '') !== '';
@@ -47,6 +51,17 @@ $smtp_configured = trim(env('MAIL_HOST', '') ?? '') !== '';
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="PassGate">
   <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/1037/1037237.png">
+  <style>
+    .pg-select--scan {
+      min-height: 3.25rem;
+      font-size: 1rem;
+      font-weight: 600;
+      padding: 0.75rem 1rem;
+      border-radius: var(--pg-radius-sm, 0.75rem);
+      width: 100%;
+    }
+    .pg-benefit-panel.is-disabled { opacity: 0.55; pointer-events: none; }
+  </style>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
@@ -186,7 +201,27 @@ HTML
       </div>
     </div>
 
-    <div class="pg-scanner">
+    <div id="benefit-select-panel" class="pg-panel<?php echo $has_scan_benefits ? '' : ' pg-benefit-panel is-disabled'; ?>">
+      <label for="scan-benefit-select" class="pg-label">Benefit to redeem</label>
+      <p class="pg-faint" style="margin:0 0 0.55rem;font-size:0.75rem;">Select drink, food, or entry type before scanning.</p>
+      <?php if ($has_scan_benefits): ?>
+        <select id="scan-benefit-select" class="pg-select pg-select--scan">
+          <option value="">Select benefit…</option>
+          <?php foreach ($scan_benefits_list as $benefit): ?>
+            <option value="<?php echo htmlspecialchars($benefit, ENT_QUOTES); ?>"><?php echo htmlspecialchars($benefit); ?></option>
+          <?php endforeach; ?>
+        </select>
+      <?php else: ?>
+        <div class="pg-alert" id="no-benefits-msg">
+          No benefits configured yet. Add tiers with benefits in the admin setup before scanning.
+        </div>
+        <select id="scan-benefit-select" class="pg-select pg-select--scan hidden" disabled aria-hidden="true">
+          <option value="">Select benefit…</option>
+        </select>
+      <?php endif; ?>
+    </div>
+
+    <div class="pg-scanner<?php echo $has_scan_benefits ? '' : ' pg-benefit-panel is-disabled'; ?>" id="scanner-panel">
       <div id="scanner-view-element" style="width:100%;height:100%;"></div>
       <div id="video-placeholder" class="pg-scanner__placeholder">
         <i class="fa-solid fa-qrcode" style="font-size:2rem;color:#2563eb;margin-bottom:0.75rem;"></i>
@@ -195,7 +230,7 @@ HTML
       </div>
     </div>
 
-    <div class="pg-panel">
+    <div class="pg-panel<?php echo $has_scan_benefits ? '' : ' pg-benefit-panel is-disabled'; ?>" id="manual-panel">
       <p class="pg-section-title" style="margin-bottom:0.55rem;">Or type ticket ID</p>
       <div class="pg-manual-row">
         <input type="text" id="manual-ticket-id" class="pg-input" placeholder="Ticket ID" autocomplete="off" enterkeyhint="go">
@@ -271,6 +306,8 @@ HTML
     const PIN_STATION = <?php echo json_encode($pin_station); ?>;
     const STATION_PIN_ENABLED = <?php echo $station_pin_enabled ? 'true' : 'false'; ?>;
     const AUTH_ROLE = <?php echo json_encode($auth_role); ?>;
+    const SCAN_BENEFITS = <?php echo json_encode($scan_benefits_list, JSON_THROW_ON_ERROR); ?>;
+    const HAS_SCAN_BENEFITS = <?php echo $has_scan_benefits ? 'true' : 'false'; ?>;
 
     window.addEventListener('storage', (e) => {
       if (e.key !== 'passgate_auth' || !e.newValue) return;
@@ -285,6 +322,25 @@ HTML
         window.location.replace('index.php');
       }
     });
+
+    function getSelectedBenefit() {
+      const el = document.getElementById('scan-benefit-select');
+      return el ? el.value.trim() : '';
+    }
+
+    function requireBenefitSelected() {
+      if (!HAS_SCAN_BENEFITS) {
+        showToast('No benefits configured — contact admin', 'error');
+        return false;
+      }
+      const benefit = getSelectedBenefit();
+      if (!benefit) {
+        showToast('Select a benefit before scanning', 'error');
+        document.getElementById('scan-benefit-select')?.focus();
+        return false;
+      }
+      return true;
+    }
 
     function setReadyState(ready, stationLabel) {
       const title = document.getElementById('header-station-title');
@@ -307,7 +363,20 @@ HTML
       activeStationType = stationLabel;
       document.getElementById('login-overlay').classList.add('hidden');
       setReadyState(true, stationLabel);
+      preselectBenefitMatch(stationLabel);
       startCameraScanningEngine();
+    }
+
+    function preselectBenefitMatch(label) {
+      const sel = document.getElementById('scan-benefit-select');
+      if (!sel || !label) return;
+      const norm = label.trim().toLowerCase();
+      for (const opt of sel.options) {
+        if (opt.value && opt.value.toLowerCase() === norm) {
+          sel.value = opt.value;
+          return;
+        }
+      }
     }
 
     if (IS_STALL_AUTHENTICATED && STALL_NAME) {
@@ -491,6 +560,7 @@ HTML
         document.getElementById('login-overlay')?.classList.remove('hidden');
         return;
       }
+      if (!requireBenefitSelected()) return;
       try {
         await loadHtml5QrcodeLibrary();
       } catch (err) {
@@ -544,6 +614,9 @@ HTML
         document.getElementById('login-overlay')?.classList.remove('hidden');
         return;
       }
+      if (!requireBenefitSelected()) return;
+
+      const selectedBenefit = getSelectedBenefit();
       let cleanedId = ticketId.trim();
       if (/^\d+$/.test(cleanedId)) cleanedId = cleanedId.padStart(6, '0');
 
@@ -560,7 +633,7 @@ HTML
       fetch(`${BASE_URL}/api.php?action=scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticket_id: cleanedId, station: activeStationType })
+        body: JSON.stringify({ ticket_id: cleanedId, station: selectedBenefit })
       })
       .then(async response => {
         const data = await response.json();
@@ -578,7 +651,7 @@ HTML
             : '<i class="fa-solid fa-circle-minus mr-1.5"></i> Limit reached';
           body.innerText = isGranted ? 'Ticket verified.' : 'This benefit cannot be used again.';
           auditDetails.classList.remove('hidden');
-          populateAuditDossier(data.ticket, activeStationType);
+          populateAuditDossier(data.ticket, selectedBenefit);
           if (data.stall_name) {
             document.getElementById('audit-stall-row').classList.remove('hidden');
             document.getElementById('audit-stall').innerText = data.stall_name;
@@ -673,6 +746,7 @@ HTML
     function processManualScan() {
       const el = document.getElementById('manual-ticket-id');
       if (!el.value.trim()) return;
+      if (!requireBenefitSelected()) return;
       executeScanTransaction(el.value.trim());
       el.value = '';
     }
