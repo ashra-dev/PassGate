@@ -46,6 +46,46 @@ if ($action === 'unlock_station') {
     exit;
 }
 
+if ($action === 'distributor_login') {
+    $email = strtolower(trim($data['email'] ?? ''));
+    $password = (string) ($data['password'] ?? '');
+
+    if ($email === '' || $password === '') {
+        http_response_code(400);
+        echo json_encode(['status' => 'error', 'message' => 'Email and password are required.']);
+        exit;
+    }
+
+    try {
+        $db = getDb();
+        ensureDistributorsSchema($db);
+        $distributor = authenticateDistributor($db, $email, $password);
+
+        if ($distributor === null) {
+            auditLog('AUTH', "Failed distributor login for {$email}");
+            http_response_code(401);
+            echo json_encode(['status' => 'error', 'message' => 'Invalid email or password.']);
+            exit;
+        }
+
+        establishDistributorSession($distributor);
+        auditLog('AUTH', "Distributor login success: {$distributor['name']} ({$email})");
+
+        echo json_encode([
+            'status'           => 'success',
+            'distributor_id'   => (string) $distributor['id'],
+            'distributor_name' => (string) $distributor['name'],
+            'distributor_role' => (string) $distributor['role'],
+            'redirect'         => distributorLoginRedirectPath((string) $distributor['role']),
+        ]);
+    } catch (Throwable $e) {
+        auditLog('AUTH', 'Distributor login error: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['status' => 'error', 'message' => 'Unable to process login request.']);
+    }
+    exit;
+}
+
 if ($action === 'stall_login') {
     $email = strtolower(trim($data['email'] ?? ''));
     $password = (string) ($data['password'] ?? '');

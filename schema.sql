@@ -2,11 +2,12 @@
 -- Run: createdb passgate && psql -d passgate -f schema.sql
 
 CREATE TABLE IF NOT EXISTS distributors (
-    id          VARCHAR(50)  PRIMARY KEY,
-    name        VARCHAR(255) NOT NULL,
-    email       VARCHAR(255) NOT NULL UNIQUE,
-    role        VARCHAR(50)  NOT NULL DEFAULT 'distributor',
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP
+    id            VARCHAR(50)  PRIMARY KEY,
+    name          VARCHAR(255) NOT NULL,
+    email         VARCHAR(255) NOT NULL UNIQUE,
+    role          VARCHAR(50)  NOT NULL DEFAULT 'distributor',
+    password_hash VARCHAR(255) NOT NULL DEFAULT '',
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -77,6 +78,14 @@ CREATE TABLE IF NOT EXISTS payment_pending (
     created_at       TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS password_resets (
+    id         SERIAL       PRIMARY KEY,
+    email      VARCHAR(255) NOT NULL,
+    token      VARCHAR(64)  NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ  NOT NULL,
+    created_at TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS stalls (
     id            SERIAL       PRIMARY KEY,
     name          VARCHAR(255) NOT NULL,
@@ -122,5 +131,7 @@ CREATE INDEX IF NOT EXISTS idx_customers_email           ON customers (email);
 CREATE INDEX IF NOT EXISTS idx_customer_tickets_customer ON customer_tickets (customer_id);
 CREATE INDEX IF NOT EXISTS idx_customer_tickets_ticket   ON customer_tickets (ticket_id);
 CREATE INDEX IF NOT EXISTS idx_payment_pending_uuid      ON payment_pending (transaction_uuid);
+CREATE INDEX IF NOT EXISTS idx_password_resets_email     ON password_resets (email);
+CREATE INDEX IF NOT EXISTS idx_password_resets_token     ON password_resets (token);
 CREATE INDEX IF NOT EXISTS idx_login_tokens_token       ON login_tokens (token);
 CREATE INDEX IF NOT EXISTS idx_login_tokens_expires_at   ON login_tokens (expires_at);

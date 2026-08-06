@@ -12,8 +12,10 @@ if (
     || $_SESSION['distributor_authenticated'] !== true
     || ($_SESSION['distributor_role'] ?? '') !== 'admin'
 ) {
-    header('Location: terminal.php');
-    exit;
+    if (isDistributorAuthenticated() && ($_SESSION['distributor_role'] ?? '') !== 'admin') {
+        safeRedirect('distributor_dashboard.php');
+    }
+    safeRedirect('distributor_login.php');
 }
 
 $db = getDb();
@@ -35,16 +37,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $userIp = $_SERVER['REMOTE_ADDR'] ?? 'UNKNOWN';
 
     if (isset($_POST['global_action']) && $_POST['global_action'] === 'add_distributor') {
-        $dId = 'DIST-' . random_int(1000, 9999);
         $dName = trim($_POST['d_name'] ?? '');
         $dEmail = strtolower(trim($_POST['d_email'] ?? ''));
         $dRole = trim($_POST['d_role'] ?? 'distributor') ?: 'distributor';
+        $dPassword = (string) ($_POST['d_password'] ?? '');
+        $dPasswordConfirm = (string) ($_POST['d_password_confirm'] ?? '');
 
-        $stmt = $db->prepare(
-            'INSERT INTO distributors (id, name, email, role) VALUES (:id, :name, :email, :role)'
-        );
-        $stmt->execute(['id' => $dId, 'name' => $dName, 'email' => $dEmail, 'role' => $dRole]);
-        auditLog('CRM', "Added distributor {$dName} ({$dId})");
+        if ($dPassword !== $dPasswordConfirm) {
+            $_SESSION['distributor_flash_error'] = 'Passwords do not match.';
+        } else {
+            try {
+                ensureDistributorsSchema($db);
+                $newId = createDistributor($db, $dName, $dEmail, $dPassword, $dRole);
+                auditLog('CRM', "Added distributor {$dName} ({$newId})");
+            } catch (Throwable $e) {
+                $_SESSION['distributor_flash_error'] = $e->getMessage();
+            }
+        }
+        safeRedirect('distributors.php?' . $eventQuery('distributors'));
+    }
+
+    if (isset($_POST['global_action']) && $_POST['global_action'] === 'reset_distributor_password') {
+        $targetId = trim($_POST['d_id'] ?? '');
+        $newPassword = (string) ($_POST['new_password'] ?? '');
+        $confirmPassword = (string) ($_POST['new_password_confirm'] ?? '');
+
+        if ($newPassword !== $confirmPassword) {
+            $_SESSION['distributor_flash_error'] = 'Passwords do not match.';
+        } else {
+            try {
+                resetDistributorPassword($db, $targetId, $newPassword);
+                auditLog('CRM', "Reset password for distributor {$targetId}");
+            } catch (Throwable $e) {
+                $_SESSION['distributor_flash_error'] = $e->getMessage();
+            }
+        }
         safeRedirect('distributors.php?' . $eventQuery('distributors'));
     }
 
@@ -249,6 +276,8 @@ $scansByCategory = getScansByCategory($db, $eventId);
 $customers = getAllCustomersWithStats($db);
 $stallFlashError = $_SESSION['stall_flash_error'] ?? '';
 unset($_SESSION['stall_flash_error']);
+$distributorFlashError = $_SESSION['distributor_flash_error'] ?? '';
+unset($_SESSION['distributor_flash_error']);
 
 $stationChartStmt = $db->prepare(
     'SELECT s.station_type, COUNT(*) AS cnt
@@ -624,14 +653,21 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
             <p>Companies that receive ticket ranges from the Vault Pool.</p>
         </div>
     </div>
+    <?php if ($distributorFlashError !== ''): ?>
+        <div class="pg-alert" style="margin-bottom:1rem;">
+            <?php echo htmlspecialchars($distributorFlashError); ?>
+        </div>
+    <?php endif; ?>
     <div class="pg-form-panel">
         <h4>Add Distributor</h4>
-        <p class="pg-form-hint">They log in with the same magic-link flow as admin, using this email.</p>
+        <p class="pg-form-hint">Set a login password — distributors sign in at <code class="pg-mono">distributor_login.php</code>.</p>
         <form method="POST" class="pg-form-grid">
             <input type="hidden" name="global_action" value="add_distributor">
             <div class="pg-field"><label>Company</label><input type="text" name="d_name" required placeholder="Acme Tickets"></div>
             <div class="pg-field"><label>Email</label><input type="email" name="d_email" required placeholder="ops@company.com"></div>
             <div class="pg-field"><label>Role</label><select name="d_role"><option value="distributor">Distributor</option><option value="admin">Admin</option></select></div>
+            <div class="pg-field"><label>Password</label><input type="password" name="d_password" required minlength="6"></div>
+            <div class="pg-field"><label>Confirm Password</label><input type="password" name="d_password_confirm" required minlength="6"></div>
             <button type="submit" class="btn btn-success">Save</button>
         </form>
     </div>
@@ -643,7 +679,7 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
         </div>
     <?php else: ?>
         <table>
-            <thead><tr><th>ID</th><th>Company</th><th>Email</th><th>Role</th><th></th></tr></thead>
+            <thead><tr><th>ID</th><th>Company</th><th>Email</th><th>Role</th><th>Actions</th></tr></thead>
             <tbody>
                 <?php foreach ($distributors as $d): ?>
                     <tr>
@@ -651,8 +687,12 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
                         <td><strong><?php echo htmlspecialchars($d['name']); ?></strong></td>
                         <td><?php echo htmlspecialchars($d['email']); ?></td>
                         <td><span class="badge-count"><?php echo htmlspecialchars($d['role']); ?></span></td>
-                        <td>
-                            <form method="POST" onsubmit="return confirm('Delete this distributor?');">
+                        <td style="white-space:nowrap;">
+                            <button type="button" class="btn btn-primary" style="padding:4px 8px;font-size:11px;"
+                                    onclick="openResetDistributorModal(<?php echo json_encode($d['id']); ?>, <?php echo json_encode($d['name']); ?>)">
+                                Reset Password
+                            </button>
+                            <form method="POST" style="display:inline;" onsubmit="return confirm('Delete this distributor?');">
                                 <input type="hidden" name="global_action" value="delete_distributor">
                                 <input type="hidden" name="d_id" value="<?php echo htmlspecialchars($d['id']); ?>">
                                 <button type="submit" class="btn btn-danger" style="padding:4px 8px;font-size:11px;">Delete</button>
@@ -663,6 +703,38 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
             </tbody>
         </table>
     <?php endif; ?>
+
+    <div id="reset-distributor-modal" class="pg-modal-scrim" role="dialog" aria-modal="true">
+        <div class="pg-modal-card">
+            <h3 id="reset-distributor-title">Reset Password</h3>
+            <form method="POST" style="margin-top:1rem;">
+                <input type="hidden" name="global_action" value="reset_distributor_password">
+                <input type="hidden" name="d_id" id="reset-distributor-id" value="">
+                <div class="pg-field" style="margin-bottom:0.75rem;">
+                    <label style="display:block;margin-bottom:0.35rem;font-size:0.7rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;">New Password</label>
+                    <input type="password" name="new_password" required minlength="6" style="width:100%;box-sizing:border-box;">
+                </div>
+                <div class="pg-field" style="margin-bottom:0.75rem;">
+                    <label style="display:block;margin-bottom:0.35rem;font-size:0.7rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;">Confirm Password</label>
+                    <input type="password" name="new_password_confirm" required minlength="6" style="width:100%;box-sizing:border-box;">
+                </div>
+                <div style="display:flex;gap:0.6rem;margin-top:1rem;">
+                    <button type="submit" class="btn btn-success">Update Password</button>
+                    <button type="button" class="btn btn-ghost" onclick="closeResetDistributorModal()">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <script>
+        function openResetDistributorModal(id, name) {
+            document.getElementById('reset-distributor-id').value = id;
+            document.getElementById('reset-distributor-title').innerText = 'Reset Password — ' + name;
+            document.getElementById('reset-distributor-modal').classList.add('is-open');
+        }
+        function closeResetDistributorModal() {
+            document.getElementById('reset-distributor-modal').classList.remove('is-open');
+        }
+    </script>
 
 <?php elseif ($active_tab === 'stalls'): ?>
     <div class="pg-section-head">

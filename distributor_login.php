@@ -7,36 +7,35 @@ session_start();
 require_once __DIR__ . '/includes/functions.php';
 require_once __DIR__ . '/includes/ui.php';
 
-$next = passgateSafeNextUrl($_GET['next'] ?? null, 'terminal.php');
+$next = passgateSafeNextUrl($_GET['next'] ?? null, 'distributor_dashboard.php');
 
-if (isStallAuthenticated()) {
-    safeRedirect($next);
+if (isDistributorAuthenticated()) {
+    safeRedirect(distributorLoginRedirectPath((string) ($_SESSION['distributor_role'] ?? '')));
 }
 
 $error = '';
 $loggedOut = isset($_GET['logged_out']);
-$locked = isset($_GET['locked']);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = strtolower(trim($_POST['email'] ?? ''));
     $password = (string) ($_POST['password'] ?? '');
-    $next = passgateSafeNextUrl($_POST['next'] ?? null, 'terminal.php');
+    $next = passgateSafeNextUrl($_POST['next'] ?? null, 'distributor_dashboard.php');
 
     try {
         $db = getDb();
-        ensureStallsSchema($db);
-        $stall = authenticateStall($db, $email, $password);
+        ensureDistributorsSchema($db);
+        $distributor = authenticateDistributor($db, $email, $password);
 
-        if ($stall === null) {
-            auditLog('AUTH', "Failed staff login for {$email}");
+        if ($distributor === null) {
+            auditLog('AUTH', "Failed distributor login for {$email}");
             $error = 'Invalid email or password.';
         } else {
-            establishStallSession($stall);
-            auditLog('AUTH', "Staff login: {$stall['name']} ({$email})");
-            safeRedirect($next . (str_contains($next, '?') ? '&' : '?') . 'welcome=1');
+            establishDistributorSession($distributor);
+            auditLog('AUTH', "Distributor login: {$distributor['name']} ({$email})");
+            safeRedirect(distributorLoginRedirectPath((string) $distributor['role']));
         }
     } catch (Throwable $e) {
-        auditLog('AUTH', 'Staff login error: ' . $e->getMessage());
+        auditLog('AUTH', 'Distributor login error: ' . $e->getMessage());
         $error = 'Unable to process login request.';
     }
 }
@@ -44,32 +43,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <?php passgateRenderHead('PassGate – Staff Login'); ?>
+    <?php passgateRenderHead('PassGate – Distributor Login'); ?>
 </head>
 <body class="pg-body">
-    <?php passgateRenderStaffNav('staff-login'); ?>
+    <?php passgateRenderStaffNav('distributor-login'); ?>
     <?php passgateRenderBreadcrumb([
         ['label' => 'Home', 'href' => 'index.php'],
-        ['label' => 'Staff login'],
+        ['label' => 'Distributor login'],
     ]); ?>
     <div class="pg-auth-stage">
         <div class="pg-card pg-card--auth">
             <div style="text-align:center;margin-bottom:1.15rem;">
                 <div class="pg-brand-mark" style="margin:0 auto 0.85rem;font-size:1.1rem;">
-                    <i class="fa-solid fa-id-badge"></i>
+                    <i class="fa-solid fa-building"></i>
                 </div>
-                <p class="pg-eyebrow" style="margin:0 0 0.35rem;">Staff terminal</p>
-                <h1 class="pg-brand" style="font-size:1.7rem;margin:0;">Staff login</h1>
+                <p class="pg-eyebrow" style="margin:0 0 0.35rem;">Distributor portal</p>
+                <h1 class="pg-brand" style="font-size:1.7rem;margin:0;">Distributor login</h1>
                 <p class="pg-muted" style="margin:0.45rem 0 0;font-size:0.84rem;line-height:1.45;">
-                    Stall workers — sign in with the email and password from your event admin.
+                    Ticket distributors — sign in with the email and password from your event admin.
                 </p>
             </div>
 
             <?php if ($loggedOut): ?>
                 <div class="pg-notice pg-notice--ok" style="margin-bottom:1rem;">You have been logged out.</div>
-            <?php endif; ?>
-            <?php if ($locked): ?>
-                <div class="pg-notice pg-notice--info" style="margin-bottom:1rem;">Terminal locked. Log in again to scan.</div>
             <?php endif; ?>
             <?php if ($error !== ''): ?>
                 <div class="pg-alert" style="margin-bottom:1rem;"><?php echo htmlspecialchars($error); ?></div>
@@ -79,7 +75,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <input type="hidden" name="next" value="<?php echo htmlspecialchars($next); ?>">
                 <label class="pg-label" for="email">Email</label>
                 <input type="email" id="email" name="email" required autocomplete="username" class="pg-input"
-                       placeholder="stall@event.com"
+                       placeholder="ops@company.com"
                        value="<?php echo htmlspecialchars($_POST['email'] ?? ''); ?>">
                 <label class="pg-label" for="password" style="margin-top:0.85rem;">Password</label>
                 <input type="password" id="password" name="password" required autocomplete="current-password" class="pg-input">
@@ -91,9 +87,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <p class="pg-links" style="margin-top:1rem;text-align:center;font-size:0.82rem;">
                 Event admin?
                 <a href="admin_login.php">Admin login</a>
-                · Ticket distributor?
-                <a href="distributor_login.php">Distributor login</a>
-                · <a href="index.php">Home</a>
+                · Stall staff?
+                <a href="staff_login.php">Staff login</a>
             </p>
         </div>
     </div>

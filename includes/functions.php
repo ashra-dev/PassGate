@@ -885,13 +885,11 @@ function completeMagicLinkLogin(PDO $db, string $email, string $token): array
     $record = $stmt->fetch();
 
     if ($record) {
-        session_regenerate_id(true);
-        clearCustomerSession();
-
-        $_SESSION['distributor_authenticated'] = true;
-        $_SESSION['distributor_email'] = $record['email'];
-        $_SESSION['distributor_role'] = $record['role'];
-        $_SESSION['distributor_id'] = $record['id'];
+        establishDistributorSession([
+            'id'    => $record['id'],
+            'email' => $record['email'],
+            'role'  => $record['role'],
+        ]);
 
         $delete = $db->prepare('DELETE FROM login_tokens WHERE id = :id');
         $delete->execute(['id' => $record['token_id']]);
@@ -901,7 +899,7 @@ function completeMagicLinkLogin(PDO $db, string $email, string $token): array
         return [
             'success'  => true,
             'error'    => null,
-            'redirect' => $record['role'] === 'admin' ? 'distributors.php' : 'terminal.php',
+            'redirect' => distributorLoginRedirectPath($record['role']),
         ];
     }
 
@@ -942,6 +940,284 @@ function isDistributorAuthenticated(): bool
 {
     return isset($_SESSION['distributor_authenticated'])
         && $_SESSION['distributor_authenticated'] === true;
+}
+
+/**
+ * Apply distributors.password_hash for existing databases.
+ */
+function ensureDistributorsSchema(PDO $db): void
+{
+    $colCheck = $db->prepare(
+        "SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'distributors'
+           AND column_name = 'password_hash'"
+    );
+    $colCheck->execute();
+
+    if ($colCheck->fetchColumn() === false) {
+        $db->exec(
+            "ALTER TABLE distributors ADD COLUMN password_hash VARCHAR(255) NOT NULL DEFAULT ''"
+        );
+    }
+}
+
+/**
+ * @return array<string, mixed>|null
+ */
+function getDistributorByEmail(PDO $db, string $email): ?array
+{
+    ensureDistributorsSchema($db);
+    $stmt = $db->prepare('SELECT * FROM distributors WHERE LOWER(email) = :email');
+    $stmt->execute(['email' => strtolower(trim($email))]);
+    $row = $stmt->fetch();
+
+    return $row ?: null;
+}
+
+/**
+ * Establish a distributor/admin session after successful authentication.
+ *
+ * @param array<string, mixed> $distributor
+ */
+function establishDistributorSession(array $distributor): void
+{
+    session_regenerate_id(true);
+    clearCustomerSession();
+    clearTerminalSession();
+
+    $_SESSION['distributor_authenticated'] = true;
+    $_SESSION['distributor_email'] = (string) $distributor['email'];
+    $_SESSION['distributor_role'] = (string) ($distributor['role'] ?? 'distributor');
+    $_SESSION['distributor_id'] = (string) $distributor['id'];
+}
+
+/**
+ * Authenticate a distributor by email/password. Returns distributor row or null.
+ *
+ * @return array<string, mixed>|null
+ */
+function authenticateDistributor(PDO $db, string $email, string $password): ?array
+{
+    $email = strtolower(trim($email));
+    if ($email === '' || $password === '') {
+        return null;
+    }
+
+    $distributor = getDistributorByEmail($db, $email);
+    if ($distributor === null) {
+        return null;
+    }
+
+    $hash = (string) ($distributor['password_hash'] ?? '');
+    if ($hash === '' || !password_verify($password, $hash)) {
+        return null;
+    }
+
+    return $distributor;
+}
+
+/**
+ * Create a distributor account with an admin-set password.
+ *
+ * @throws InvalidArgumentException
+ */
+function createDistributor(
+    PDO $db,
+    string $name,
+    string $email,
+    string $password,
+    string $role = 'distributor'
+): string
+{
+    ensureDistributorsSchema($db);
+
+    $name = trim($name);
+    $email = strtolower(trim($email));
+    $role = trim($role) !== '' ? trim($role) : 'distributor';
+
+    if ($name === '' || $email === '' || $password === '') {
+        throw new InvalidArgumentException('Company name, email, and password are required.');
+    }
+
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        throw new InvalidArgumentException('Invalid email address.');
+    }
+
+    if (strlen($password) < 6) {
+        throw new InvalidArgumentException('Password must be at least 6 characters.');
+    }
+
+    if (!in_array($role, ['distributor', 'admin'], true)) {
+        throw new InvalidArgumentException('Invalid role.');
+    }
+
+    if (getDistributorByEmail($db, $email) !== null) {
+        throw new InvalidArgumentException('A distributor with this email already exists.');
+    }
+
+    $id = 'DIST-' . random_int(1000, 9999);
+    $stmt = $db->prepare(
+        'INSERT INTO distributors (id, name, email, role, password_hash)
+         VALUES (:id, :name, :email, :role, :password_hash)'
+    );
+    $stmt->execute([
+        'id'            => $id,
+        'name'          => $name,
+        'email'         => $email,
+        'role'          => $role,
+        'password_hash' => password_hash($password, PASSWORD_DEFAULT),
+    ]);
+
+    return $id;
+}
+
+/**
+ * Update a distributor password hash (admin reset).
+ *
+ * @throws InvalidArgumentException
+ */
+function resetDistributorPassword(PDO $db, string $distributorId, string $password): void
+{
+    if ($password === '') {
+        throw new InvalidArgumentException('Password is required.');
+    }
+
+    if (strlen($password) < 6) {
+        throw new InvalidArgumentException('Password must be at least 6 characters.');
+    }
+
+    ensureDistributorsSchema($db);
+
+    $stmt = $db->prepare('SELECT id FROM distributors WHERE id = :id');
+    $stmt->execute(['id' => $distributorId]);
+    if ($stmt->fetchColumn() === false) {
+        throw new InvalidArgumentException('Distributor not found.');
+    }
+
+    $update = $db->prepare('UPDATE distributors SET password_hash = :hash WHERE id = :id');
+    $update->execute([
+        'hash' => password_hash($password, PASSWORD_DEFAULT),
+        'id'   => $distributorId,
+    ]);
+}
+
+/**
+ * Require an authenticated non-admin distributor session.
+ *
+ * @return array<string, mixed>
+ */
+function requireDistributorAuth(PDO $db): array
+{
+    if (!isDistributorAuthenticated()) {
+        safeRedirect('distributor_login.php?next=' . urlencode(passgateCurrentPath()));
+    }
+
+    $role = (string) ($_SESSION['distributor_role'] ?? '');
+    if ($role === 'admin') {
+        safeRedirect('distributors.php');
+    }
+
+    $distributorId = (string) ($_SESSION['distributor_id'] ?? '');
+    $stmt = $db->prepare('SELECT * FROM distributors WHERE id = :id');
+    $stmt->execute(['id' => $distributorId]);
+    $distributor = $stmt->fetch();
+
+    if (!$distributor) {
+        clearDistributorSession();
+        safeRedirect('distributor_login.php');
+    }
+
+    return $distributor;
+}
+
+/**
+ * Events where this distributor holds allocated tickets.
+ *
+ * @return array<int, array<string, mixed>>
+ */
+function getDistributorEvents(PDO $db, string $distributorId): array
+{
+    $stmt = $db->prepare(
+        'SELECT e.id, e.name, COUNT(t.id) AS ticket_count
+         FROM events e
+         JOIN tickets t ON t.event_id = e.id
+         WHERE t.allocated_distributor_id = :distributor_id
+         GROUP BY e.id, e.name
+         ORDER BY e.name'
+    );
+    $stmt->execute(['distributor_id' => $distributorId]);
+
+    return $stmt->fetchAll();
+}
+
+/**
+ * Summary stats for a distributor within one event.
+ *
+ * @return array{total: int, active: int, sold_online: int, scans_used: int}
+ */
+function getDistributorEventSummary(PDO $db, string $distributorId, int $eventId): array
+{
+    $ticketStmt = $db->prepare(
+        'SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE customer_id IS NULL AND status = \'Active\') AS active,
+            COUNT(*) FILTER (WHERE customer_id IS NOT NULL) AS sold_online
+         FROM tickets
+         WHERE allocated_distributor_id = :distributor_id AND event_id = :event_id'
+    );
+    $ticketStmt->execute(['distributor_id' => $distributorId, 'event_id' => $eventId]);
+    $ticketRow = $ticketStmt->fetch() ?: [];
+
+    $scanStmt = $db->prepare(
+        'SELECT COUNT(s.id) AS scans_used
+         FROM scans s
+         JOIN tickets t ON t.id = s.ticket_id
+         WHERE t.allocated_distributor_id = :distributor_id AND t.event_id = :event_id'
+    );
+    $scanStmt->execute(['distributor_id' => $distributorId, 'event_id' => $eventId]);
+    $scansUsed = (int) ($scanStmt->fetchColumn() ?: 0);
+
+    return [
+        'total'        => (int) ($ticketRow['total'] ?? 0),
+        'active'       => (int) ($ticketRow['active'] ?? 0),
+        'sold_online'  => (int) ($ticketRow['sold_online'] ?? 0),
+        'scans_used'   => $scansUsed,
+    ];
+}
+
+/**
+ * Allocated tickets for a distributor within one event.
+ *
+ * @return array<int, array<string, mixed>>
+ */
+function getDistributorTicketsForEvent(PDO $db, string $distributorId, int $eventId): array
+{
+    $stmt = $db->prepare(
+        'SELECT t.*, ti.name AS tier_name, ti.price, e.name AS event_name,
+                c.email AS customer_email, c.name AS customer_name
+         FROM tickets t
+         JOIN tiers ti ON ti.id = t.tier_id
+         JOIN events e ON e.id = t.event_id
+         LEFT JOIN customers c ON c.id = t.customer_id
+         WHERE t.allocated_distributor_id = :distributor_id AND t.event_id = :event_id
+         ORDER BY t.physical_number'
+    );
+    $stmt->execute(['distributor_id' => $distributorId, 'event_id' => $eventId]);
+
+    return $stmt->fetchAll();
+}
+
+/**
+ * Current request path for safe login redirects.
+ */
+function passgateCurrentPath(): string
+{
+    $uri = $_SERVER['REQUEST_URI'] ?? '';
+    if ($uri === '') {
+        return basename($_SERVER['SCRIPT_NAME'] ?? 'index.php');
+    }
+
+    return $uri;
 }
 
 /**
@@ -1257,13 +1533,15 @@ function redirectIfAuthenticated(): void
         return;
     }
 
-    $role = $_SESSION['distributor_role'] ?? '';
+    safeRedirect(distributorLoginRedirectPath((string) ($_SESSION['distributor_role'] ?? '')));
+}
 
-    if ($role === 'admin') {
-        safeRedirect('distributors.php');
-    }
-
-    safeRedirect('terminal.php');
+/**
+ * Post-login destination for distributor/admin sessions.
+ */
+function distributorLoginRedirectPath(string $role): string
+{
+    return $role === 'admin' ? 'distributors.php' : 'distributor_dashboard.php';
 }
 
 /**
@@ -1445,6 +1723,18 @@ function ensureCustomerSchema(PDO $db): void
     $db->exec('CREATE INDEX IF NOT EXISTS idx_customer_tickets_customer ON customer_tickets (customer_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_customer_tickets_ticket ON customer_tickets (ticket_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_payment_pending_uuid ON payment_pending (transaction_uuid)');
+
+    $db->exec(
+        'CREATE TABLE IF NOT EXISTS password_resets (
+            id         SERIAL PRIMARY KEY,
+            email      VARCHAR(255) NOT NULL,
+            token      VARCHAR(64) NOT NULL UNIQUE,
+            expires_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )'
+    );
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_password_resets_email ON password_resets (email)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets (token)');
 }
 
 function isCustomerAuthenticated(): bool
@@ -1608,6 +1898,144 @@ function authenticateCustomer(PDO $db, string $email, string $password): ?array
     }
 
     return $customer;
+}
+
+/**
+ * Create a password-reset token and email it when the customer exists.
+ * Always returns without error so callers can show a generic success message.
+ */
+function requestCustomerPasswordReset(PDO $db, string $email): void
+{
+    ensureCustomerSchema($db);
+
+    $email = strtolower(trim($email));
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        return;
+    }
+
+    $customer = getCustomerByEmail($db, $email);
+    if ($customer === null) {
+        return;
+    }
+
+    $token = bin2hex(random_bytes(32));
+    $expiresAt = (new DateTimeImmutable('+1 hour'))->format('Y-m-d H:i:sP');
+
+    $purge = $db->prepare('DELETE FROM password_resets WHERE LOWER(email) = :email');
+    $purge->execute(['email' => $email]);
+
+    $insert = $db->prepare(
+        'INSERT INTO password_resets (email, token, expires_at) VALUES (:email, :token, :expires_at)'
+    );
+    $insert->execute([
+        'email' => $email,
+        'token' => $token,
+        'expires_at' => $expiresAt,
+    ]);
+
+    sendCustomerPasswordResetEmail($email, $token);
+    auditLog('AUTH', "Password reset requested for {$email}");
+}
+
+/**
+ * Send a customer password-reset link via SMTP (or dev_login.log in local mode).
+ */
+function sendCustomerPasswordResetEmail(string $email, string $token): bool
+{
+    require_once __DIR__ . '/mailer.php';
+
+    $appUrl = rtrim(env('APP_URL', 'http://localhost:8000'), '/');
+    $link = $appUrl . '/reset_password.php?token=' . urlencode($token) . '&email=' . urlencode($email);
+
+    $subject = 'Reset your PassGate password';
+    $textBody = "We received a request to reset your PassGate password.\n\n"
+        . "Click the link below to choose a new password. This link expires in 1 hour.\n\n{$link}\n\n"
+        . "If you did not request this, you can ignore this email.\n";
+    $htmlBody = '<p>We received a request to reset your PassGate password.</p>'
+        . '<p>Click the link below to choose a new password. This link expires in 1 hour.</p>'
+        . '<p><a href="' . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '">Reset your password</a></p>'
+        . '<p>Or copy this URL:<br><code>' . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '</code></p>'
+        . '<p>If you did not request this, you can ignore this email.</p>';
+
+    if (shouldUseDevMailFallback()) {
+        writeDevLoginLink($email, $link);
+
+        return true;
+    }
+
+    $result = sendSmtpEmail($email, $subject, $textBody, $htmlBody);
+
+    if (!$result['success']) {
+        auditLog('MAIL', "Password reset SMTP failed for {$email}: {$result['error']}");
+    }
+
+    return $result['success'];
+}
+
+/**
+ * @return array<string, mixed>|null
+ */
+function findValidPasswordReset(PDO $db, string $email, string $token): ?array
+{
+    ensureCustomerSchema($db);
+
+    $stmt = $db->prepare(
+        'SELECT * FROM password_resets
+         WHERE token = :token AND LOWER(email) = :email AND expires_at > NOW()'
+    );
+    $stmt->execute([
+        'token' => $token,
+        'email' => strtolower(trim($email)),
+    ]);
+
+    $row = $stmt->fetch();
+
+    return $row ?: null;
+}
+
+/**
+ * Update the customer password and invalidate the reset token.
+ *
+ * @throws InvalidArgumentException
+ */
+function resetCustomerPassword(PDO $db, string $email, string $token, string $newPassword): bool
+{
+    if (strlen($newPassword) < 6) {
+        throw new InvalidArgumentException('Password must be at least 6 characters.');
+    }
+
+    $reset = findValidPasswordReset($db, $email, $token);
+    if ($reset === null) {
+        return false;
+    }
+
+    $customer = getCustomerByEmail($db, $email);
+    if ($customer === null) {
+        return false;
+    }
+
+    $hash = password_hash($newPassword, PASSWORD_DEFAULT);
+
+    $db->beginTransaction();
+
+    try {
+        $update = $db->prepare(
+            'UPDATE customers SET password_hash = :hash, updated_at = NOW() WHERE id = :id'
+        );
+        $update->execute(['hash' => $hash, 'id' => $customer['id']]);
+
+        $delete = $db->prepare('DELETE FROM password_resets WHERE id = :id');
+        $delete->execute(['id' => $reset['id']]);
+
+        $db->commit();
+        auditLog('AUTH', "Password reset completed for {$email}");
+
+        return true;
+    } catch (Throwable $e) {
+        $db->rollBack();
+
+        throw $e;
+    }
 }
 
 function establishCustomerSession(array $customer): void

@@ -15,6 +15,7 @@ try {
     ensureStallsSchema($db);
     ensureCategorySchema($db);
     ensureCustomerSchema($db);
+    ensureDistributorsSchema($db);
     echo "SUCCESS: Schema upgrades applied.\n";
 } catch (Throwable $e) {
     fwrite(STDERR, 'FAILURE: ' . $e->getMessage() . "\n");

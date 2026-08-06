@@ -15,6 +15,7 @@ if (isCustomerAuthenticated()) {
 
 $error = '';
 $registered = isset($_GET['registered']);
+$reset = isset($_GET['reset']);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = strtolower(trim($_POST['email'] ?? ''));
@@ -69,6 +70,9 @@ $goingToBuy = $next === 'buy.php';
             <?php if ($registered): ?>
                 <div class="pg-notice pg-notice--ok" style="margin-top:1.1rem;">Account ready. Log in to continue.</div>
             <?php endif; ?>
+            <?php if ($reset): ?>
+                <div class="pg-notice pg-notice--ok" style="margin-top:1.1rem;">Password updated. Log in with your new password.</div>
+            <?php endif; ?>
             <?php if ($error !== ''): ?>
                 <div class="pg-notice pg-notice--error" style="margin-top:1.1rem;"><?php echo htmlspecialchars($error); ?></div>
             <?php endif; ?>
@@ -83,6 +87,9 @@ $goingToBuy = $next === 'buy.php';
                     <label>Password</label>
                     <input type="password" name="password" required autocomplete="current-password">
                 </div>
+                <p class="pg-muted" style="margin:-0.35rem 0 0;text-align:right;font-size:0.78rem;">
+                    <a href="forgot_password.php">Forgot password?</a>
+                </p>
                 <button type="submit" class="pg-btn pg-btn--gold" style="width:100%;">
                     <?php echo $goingToBuy ? 'Log in & continue' : 'Log in'; ?>
                 </button>

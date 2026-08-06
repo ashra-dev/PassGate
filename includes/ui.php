@@ -70,6 +70,9 @@ function passgateRenderPublicNav(string $active = 'home'): void
     $isAdmin = function_exists('isDistributorAuthenticated')
         && isDistributorAuthenticated()
         && (($_SESSION['distributor_role'] ?? '') === 'admin');
+    $isDistributor = function_exists('isDistributorAuthenticated')
+        && isDistributorAuthenticated()
+        && (($_SESSION['distributor_role'] ?? '') === 'distributor');
 
     $link = static function (
         string $href,
@@ -117,6 +120,8 @@ function passgateRenderPublicNav(string $active = 'home'): void
 
     if ($isAdmin) {
         echo $link('distributors.php', 'Admin dashboard', 'admin', $active, 'fa-solid fa-gauge-high');
+    } elseif ($isDistributor) {
+        echo $link('distributor_dashboard.php', 'Distributor dashboard', 'staff', $active, 'fa-solid fa-building');
     } else {
         echo $link('admin_login.php', 'Admin login', 'admin', $active, 'fa-solid fa-gauge-high');
     }
@@ -160,7 +165,7 @@ function passgateRenderBreadcrumb(array $items): void
 /**
  * Compact staff-area navigation (scanner, lookup, admin login).
  *
- * @param 'scanner'|'validate'|'staff-login'|'stall'|'admin-login'|'admin-token' $active
+ * @param 'scanner'|'validate'|'staff-login'|'distributor-login'|'stall'|'admin-login'|'admin-token' $active
  */
 function passgateRenderStaffNav(string $active = 'scanner'): void
 {
@@ -174,6 +179,7 @@ function passgateRenderStaffNav(string $active = 'scanner'): void
     echo '<nav class="pg-staff-nav" aria-label="Staff">';
     echo $link('index.php', 'Home', 'home', $active, 'fa-solid fa-house');
     echo $link('staff_login.php', 'Staff login', 'staff-login', $active, 'fa-solid fa-id-badge');
+    echo $link('distributor_login.php', 'Distributor login', 'distributor-login', $active, 'fa-solid fa-building');
     echo $link('admin_login.php', 'Admin login', 'admin-login', $active, 'fa-solid fa-gauge-high');
     echo $link('manual_login.php', 'Paste token', 'admin-token', $active, 'fa-solid fa-key');
     echo '</nav>';
@@ -188,6 +194,9 @@ function passgateRenderPublicFooter(): void
     $isAdmin = function_exists('isDistributorAuthenticated')
         && isDistributorAuthenticated()
         && (($_SESSION['distributor_role'] ?? '') === 'admin');
+    $isDistributor = function_exists('isDistributorAuthenticated')
+        && isDistributorAuthenticated()
+        && (($_SESSION['distributor_role'] ?? '') === 'distributor');
 
     echo '<footer class="pg-public-footer">';
     echo '<nav class="pg-public-footer__links" aria-label="Footer">';
@@ -201,9 +210,12 @@ function passgateRenderPublicFooter(): void
     }
     if ($isAdmin) {
         echo '<a href="distributors.php">Admin dashboard</a>';
+    } elseif ($isDistributor) {
+        echo '<a href="distributor_dashboard.php">Distributor dashboard</a>';
     } else {
         echo '<a href="admin_login.php">Admin login</a>';
     }
+    echo '<a href="distributor_login.php">Distributor login</a>';
     echo '<a href="staff_login.php">Staff login</a>';
     echo '</nav>';
     echo '</footer>';
