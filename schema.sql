@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS stalls (
 CREATE TABLE IF NOT EXISTS scans (
     id           SERIAL       PRIMARY KEY,
     ticket_id    VARCHAR(100) NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
-    benefit_id   INTEGER      NOT NULL REFERENCES benefits(id) ON DELETE CASCADE,
+    benefit_id   INTEGER      REFERENCES benefits(id) ON DELETE SET NULL,
     scanned_at   TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
     station_type VARCHAR(255) NOT NULL,
     stall_id     INTEGER      REFERENCES stalls(id) ON DELETE SET NULL

@@ -170,10 +170,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if (isset($_POST['action']) && $_POST['action'] === 'scan_benefit') {
         $ticketId = $_POST['ticket_id'] ?? '';
-        $benefitId = (int) ($_POST['benefit_id'] ?? 0);
         $station = trim($_POST['station_name'] ?? '');
 
-        if ($ticketId !== '' && $benefitId > 0) {
+        if ($ticketId !== '' && $station !== '') {
             processTicketScan($db, $ticketId, $station, null);
         }
         safeRedirect('distributors.php?' . $eventQuery('ledger'));
@@ -740,7 +739,7 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
     <div class="pg-section-head">
         <div>
             <h3>Stalls</h3>
-            <p>Station logins for benefit scanning. Stall name must match the benefit name.</p>
+            <p>Station logins for ticket scanning at each stall.</p>
         </div>
     </div>
     <?php if ($stallFlashError !== ''): ?>
@@ -804,7 +803,7 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
         <div class="pg-empty">
             <div class="pg-empty__icon"><i class="fa-solid fa-store"></i></div>
             <h3>No stalls yet</h3>
-            <p>Add a stall whose name matches a benefit, then staff can log in on the terminal.</p>
+            <p>Add a stall account — staff log in on the terminal to scan tickets at that station.</p>
         </div>
     <?php else: ?>
         <table>

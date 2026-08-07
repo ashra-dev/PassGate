@@ -85,21 +85,12 @@ function handleScan(PDO $db): void
     $httpCode = $result['http_code'] ?? 200;
     unset($result['http_code']);
 
-    // Attach full benefit usage for terminal / UI (does not alter scan logic)
     if (($result['status'] ?? '') !== 'error') {
         $details = getTicketDetails($db, $ticketId);
         if ($details !== null) {
-            $result['benefits_summary'] = array_map(
-                static fn (array $b): array => [
-                    'name' => trim($b['name']),
-                    'used' => (int) $b['used'],
-                    'max'  => (int) $b['max_uses'],
-                ],
-                $details['benefits']
-            );
             $result['ticket_meta'] = [
-                'event_name' => $details['ticket']['event_name'] ?? '',
-                'tier_name'  => $details['ticket']['tier_name'] ?? '',
+                'event_name'      => $details['ticket']['event_name'] ?? '',
+                'tier_name'       => $details['ticket']['tier_name'] ?? '',
                 'physical_number' => (int) ($details['ticket']['physical_number'] ?? 0),
             ];
         }

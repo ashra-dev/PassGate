@@ -32,14 +32,23 @@ function formatPrice(float|string $amount): string
 }
 
 /**
- * Process a ticket scan against a station/benefit name.
+ * Process a basic ticket scan at a stall/station (no benefit matching).
  *
- * @param int|null $stallId Optional stall attribution for the scan row.
+ * One successful scan per ticket per stall. Station name comes from the logged-in stall.
+ *
+ * @param int|null $stallId Stall attribution for the scan row.
  * @return array<string, mixed>
  */
 function processTicketScan(PDO $db, string $ticketId, string $station, ?int $stallId = null): array
 {
+    ensureScansSchema($db);
+
     $ticketId = trim($ticketId);
+    $station = trim($station);
+
+    if ($station === '') {
+        return ['status' => 'error', 'message' => 'Station is required.', 'http_code' => 400];
+    }
 
     $ticketStmt = $db->prepare(
         'SELECT t.*, ti.name AS tier_name, e.name AS event_name
@@ -55,50 +64,49 @@ function processTicketScan(PDO $db, string $ticketId, string $station, ?int $sta
         return ['status' => 'error', 'message' => 'Ticket ID not found.', 'http_code' => 404];
     }
 
-    $benefitStmt = $db->prepare(
-        'SELECT * FROM benefits WHERE tier_id = :tier_id'
-    );
-    $benefitStmt->execute(['tier_id' => $ticket['tier_id']]);
-    $benefits = $benefitStmt->fetchAll();
-
-    $matchedBenefit = null;
-    $normalizedStation = normalizeStationName($station);
-
-    foreach ($benefits as $benefit) {
-        if (normalizeStationName($benefit['name']) === $normalizedStation) {
-            $matchedBenefit = $benefit;
-            break;
-        }
-    }
-
-    if ($matchedBenefit === null) {
+    if (strcasecmp((string) ($ticket['status'] ?? 'Active'), 'Active') !== 0) {
         return [
-            'status'  => 'error',
-            'message' => 'Station not linked to this ticket.',
+            'status'    => 'error',
+            'message'   => 'Ticket is not active.',
             'http_code' => 400,
         ];
     }
 
-    $countStmt = $db->prepare(
-        'SELECT COUNT(*) AS used FROM scans
-         WHERE ticket_id = :ticket_id AND benefit_id = :benefit_id'
-    );
-    $countStmt->execute([
-        'ticket_id'  => $ticketId,
-        'benefit_id' => $matchedBenefit['id'],
-    ]);
-    $used = (int) $countStmt->fetchColumn();
-    $max = (int) $matchedBenefit['max_uses'];
+    if ($stallId !== null) {
+        $countStmt = $db->prepare(
+            'SELECT COUNT(*) FROM scans
+             WHERE ticket_id = :ticket_id AND stall_id = :stall_id'
+        );
+        $countStmt->execute(['ticket_id' => $ticketId, 'stall_id' => $stallId]);
 
-    $logsStmt = $db->prepare(
-        'SELECT scanned_at FROM scans
-         WHERE ticket_id = :ticket_id AND benefit_id = :benefit_id
-         ORDER BY scanned_at ASC'
-    );
-    $logsStmt->execute([
-        'ticket_id'  => $ticketId,
-        'benefit_id' => $matchedBenefit['id'],
-    ]);
+        $logsStmt = $db->prepare(
+            'SELECT scanned_at FROM scans
+             WHERE ticket_id = :ticket_id AND stall_id = :stall_id
+             ORDER BY scanned_at ASC'
+        );
+        $logsStmt->execute(['ticket_id' => $ticketId, 'stall_id' => $stallId]);
+    } else {
+        $countStmt = $db->prepare(
+            'SELECT COUNT(*) FROM scans
+             WHERE ticket_id = :ticket_id
+               AND stall_id IS NULL
+               AND LOWER(TRIM(station_type)) = LOWER(TRIM(:station))'
+        );
+        $countStmt->execute(['ticket_id' => $ticketId, 'station' => $station]);
+
+        $logsStmt = $db->prepare(
+            'SELECT scanned_at FROM scans
+             WHERE ticket_id = :ticket_id
+               AND stall_id IS NULL
+               AND LOWER(TRIM(station_type)) = LOWER(TRIM(:station))
+             ORDER BY scanned_at ASC'
+        );
+        $logsStmt->execute(['ticket_id' => $ticketId, 'station' => $station]);
+    }
+
+    $used = (int) $countStmt->fetchColumn();
+    $max = 1;
+
     $logs = array_map(
         static fn (array $row): string => $row['scanned_at'],
         $logsStmt->fetchAll()
@@ -109,7 +117,7 @@ function processTicketScan(PDO $db, string $ticketId, string $station, ?int $sta
     if ($used >= $max) {
         return [
             'status'    => 'limit_reached',
-            'message'   => 'Limit reached.',
+            'message'   => 'Already scanned at this stall.',
             'used'      => $used,
             'max'       => $max,
             'http_code' => 200,
@@ -125,19 +133,18 @@ function processTicketScan(PDO $db, string $ticketId, string $station, ?int $sta
 
     $insertStmt = $db->prepare(
         'INSERT INTO scans (ticket_id, benefit_id, scanned_at, station_type, stall_id)
-         VALUES (:ticket_id, :benefit_id, NOW(), :station_type, :stall_id)'
+         VALUES (:ticket_id, NULL, NOW(), :station_type, :stall_id)'
     );
     $insertStmt->execute([
         'ticket_id'    => $ticketId,
-        'benefit_id'   => $matchedBenefit['id'],
-        'station_type' => trim($station),
+        'station_type' => $station,
         'stall_id'     => $stallId,
     ]);
 
     $used++;
 
     $stallNote = $stallId !== null ? " stall_id={$stallId}" : '';
-    auditLog('SCAN', "Ticket {$ticketId} scanned at station {$station} ({$used}/{$max}){$stallNote}");
+    auditLog('SCAN', "Ticket {$ticketId} scanned at {$station} ({$used}/{$max}){$stallNote}");
 
     $logs[] = date('Y-m-d H:i:s');
 
@@ -200,9 +207,12 @@ function getTicketDetails(PDO $db, string $ticketId): ?array
     $benefits = $benefitsStmt->fetchAll();
 
     $scansStmt = $db->prepare(
-        'SELECT s.scanned_at, s.station_type, b.name AS benefit_name
+        'SELECT s.scanned_at, s.station_type,
+                COALESCE(st.name, s.station_type) AS stall_name,
+                b.name AS benefit_name
          FROM scans s
-         JOIN benefits b ON b.id = s.benefit_id
+         LEFT JOIN benefits b ON b.id = s.benefit_id
+         LEFT JOIN stalls st ON st.id = s.stall_id
          WHERE s.ticket_id = :ticket_id
          ORDER BY s.scanned_at DESC'
     );
@@ -229,12 +239,10 @@ function buildTicketStatusPayload(PDO $db, string $ticketId): ?array
     }
 
     $ticket = $details['ticket'];
-    $benefits = $details['benefits'];
+    $scans = $details['scans'];
 
-    $totalMax = array_sum(array_column($benefits, 'max_uses'));
-    $totalUsed = array_sum(array_column($benefits, 'used'));
-    $isFullyUsed = $totalMax > 0 && $totalUsed >= $totalMax;
-    $displayStatus = $isFullyUsed ? 'Used' : ($ticket['status'] ?? 'Active');
+    $scanCount = count($scans);
+    $displayStatus = $scanCount > 0 ? 'Used' : ($ticket['status'] ?? 'Active');
 
     if (!empty($ticket['customer_email'])) {
         $holderType = 'customer';
@@ -254,16 +262,11 @@ function buildTicketStatusPayload(PDO $db, string $ticketId): ?array
         $holderDetail = '';
     }
 
-    $benefitRows = [];
-    foreach ($benefits as $benefit) {
-        $used = (int) $benefit['used'];
-        $max = (int) $benefit['max_uses'];
-        $benefitRows[] = [
-            'name'      => trim((string) $benefit['name']),
-            'used'      => $used,
-            'max'       => $max,
-            'remaining' => max(0, $max - $used),
-            'last_scan' => $benefit['last_scan'] ?? null,
+    $scanRows = [];
+    foreach ($scans as $scan) {
+        $scanRows[] = [
+            'stall'       => trim((string) ($scan['stall_name'] ?? $scan['station_type'] ?? '')),
+            'scanned_at'  => $scan['scanned_at'] ?? null,
         ];
     }
 
@@ -276,7 +279,8 @@ function buildTicketStatusPayload(PDO $db, string $ticketId): ?array
         'holder_type'     => $holderType,
         'holder_label'    => $holderLabel,
         'holder_detail'   => $holderDetail,
-        'benefits'        => $benefitRows,
+        'scan_count'      => $scanCount,
+        'scans'           => $scanRows,
     ];
 }
 
@@ -1233,9 +1237,27 @@ function isStallAuthenticated(): bool
 /**
  * Apply stalls table + scans.stall_id for existing databases.
  */
+/**
+ * Allow scans without a linked benefit (stall-only scanning).
+ */
+function ensureScansSchema(PDO $db): void
+{
+    $nullableCheck = $db->prepare(
+        "SELECT is_nullable FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'scans' AND column_name = 'benefit_id'"
+    );
+    $nullableCheck->execute();
+    $nullable = $nullableCheck->fetchColumn();
+
+    if ($nullable === 'NO') {
+        $db->exec('ALTER TABLE scans ALTER COLUMN benefit_id DROP NOT NULL');
+    }
+}
+
 function ensureStallsSchema(PDO $db): void
 {
     ensureCategorySchema($db);
+    ensureScansSchema($db);
 
     $db->exec(
         'CREATE TABLE IF NOT EXISTS stalls (
@@ -1481,13 +1503,13 @@ function deleteStall(PDO $db, int $stallId): void
 function resolveScanAuthContext(string $requestedStation): array
 {
     if (isStallAuthenticated()) {
-        $station = trim($requestedStation);
+        $station = trim((string) ($_SESSION['stall_name'] ?? ''));
         if ($station === '') {
             return [
                 'allowed'  => false,
                 'station'  => '',
                 'stall_id' => null,
-                'message'  => 'Select a benefit before scanning.',
+                'message'  => 'Stall session invalid. Log in again.',
             ];
         }
 
