@@ -113,17 +113,15 @@ HTML
         <i class="fa-solid fa-shield-halved"></i>
       </div>
       <div style="min-width:0;">
-        <div id="header-station-title" class="pg-station-name"><?php echo htmlspecialchars($stall_name); ?></div>
+        <div id="header-station-title" class="pg-station-name"><?php echo htmlspecialchars(ucfirst($stall_category ?: 'stall')); ?></div>
         <div style="margin-top:0.2rem;">
           <span id="header-status-chip" class="pg-status-chip is-ready">Ready</span>
         </div>
+        <?php if ($stall_name !== '' && $stall_name !== $stall_category): ?>
+        <p class="pg-faint" style="margin:0.15rem 0 0;font-size:0.68rem;">Booth: <?php echo htmlspecialchars($stall_name); ?></p>
+        <?php endif; ?>
         <?php if ($stall_email !== ''): ?>
         <p class="pg-faint" style="margin:0.15rem 0 0;font-size:0.68rem;"><?php echo htmlspecialchars($stall_email); ?></p>
-        <?php endif; ?>
-        <?php if ($stall_category !== ''): ?>
-        <p class="pg-faint" style="margin:0.1rem 0 0;font-size:0.65rem;text-transform:capitalize;">
-          Category: <?php echo htmlspecialchars($stall_category); ?>
-        </p>
         <?php endif; ?>
       </div>
     </div>
@@ -151,9 +149,9 @@ HTML
 
     <div id="panel-scan">
     <div class="pg-panel" style="margin-bottom:0.85rem;">
-      <p class="pg-section-title" style="margin:0 0 0.25rem;">Scanning as</p>
-      <p style="margin:0;font-weight:700;font-size:1rem;"><?php echo htmlspecialchars($stall_name); ?></p>
-      <p class="pg-faint" style="margin:0.35rem 0 0;font-size:0.75rem;">Each ticket can be scanned once at this stall.</p>
+      <p class="pg-section-title" style="margin:0 0 0.25rem;">Scanning category</p>
+      <p style="margin:0;font-weight:700;font-size:1rem;text-transform:capitalize;"><?php echo htmlspecialchars($stall_category ?: 'general'); ?></p>
+      <p class="pg-faint" style="margin:0.35rem 0 0;font-size:0.75rem;">Each ticket can be scanned once per category (shared across booths in this category).</p>
     </div>
 
     <div class="pg-scanner" id="scanner-panel">
@@ -230,18 +228,18 @@ HTML
 
 
   <script>
-    let activeStationType = <?php echo json_encode($stall_name); ?>;
+    let activeStationType = <?php echo json_encode($stall_category ?: 'general'); ?>;
     let html5QrcodeScanner = null;
     let terminalView = 'scan';
     let flashTimer = null;
     const BASE_URL = window.location.origin + window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/'));
-    const STALL_NAME = <?php echo json_encode($stall_name); ?>;
+    const STALL_CATEGORY = <?php echo json_encode($stall_category ?: 'general'); ?>;
     const SHOW_WELCOME = <?php echo $show_welcome ? 'true' : 'false'; ?>;
 
     document.addEventListener('DOMContentLoaded', () => {
       localStorage.setItem('passgate_auth', 'stall');
       if (SHOW_WELCOME) {
-        showToast(`Welcome, ${STALL_NAME}`, 'success');
+        showToast(`Welcome — ${STALL_CATEGORY} station`, 'success');
       }
     });
 
@@ -459,7 +457,7 @@ HTML
             : '<i class="fa-solid fa-circle-minus mr-1.5"></i> Already scanned';
           body.innerText = isGranted ? 'Ticket verified.' : 'This ticket cannot be scanned again at this stall.';
           auditDetails.classList.remove('hidden');
-          populateAuditDossier(data.ticket, STALL_NAME);
+          populateAuditDossier(data.ticket, STALL_CATEGORY);
           if (data.stall_name) {
             document.getElementById('audit-stall-row').classList.remove('hidden');
             document.getElementById('audit-stall').innerText = data.stall_name;

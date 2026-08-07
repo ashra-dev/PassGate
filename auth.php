@@ -99,24 +99,32 @@ if ($action === 'stall_login') {
     try {
         $db = getDb();
         ensureStallsSchema($db);
-        $stall = authenticateStall($db, $email, $password);
+        $attempt = stallLoginAttempt($db, $email, $password);
 
-        if ($stall === null) {
+        if ($attempt['result'] === 'invalid') {
             auditLog('AUTH', "Failed stall login for {$email}");
             http_response_code(401);
             echo json_encode(['status' => 'error', 'message' => 'Invalid email or password.']);
             exit;
         }
 
-        establishStallSession($stall);
-        auditLog('AUTH', "Stall login success: {$stall['name']} ({$email})");
+        if ($attempt['result'] === 'choose_category') {
+            echo json_encode([
+                'status'     => 'choose_category',
+                'email'      => $email,
+                'categories' => $attempt['categories'] ?? [],
+            ]);
+            exit;
+        }
+
+        auditLog('AUTH', "Stall login success: category {$attempt['category']} ({$email})");
 
         echo json_encode([
             'status'         => 'success',
-            'stall_id'       => (int) $stall['id'],
-            'stall_name'     => $stall['name'],
-            'stall_email'    => $stall['email'],
-            'stall_category' => (string) ($stall['category'] ?? ''),
+            'stall_id'       => (int) ($_SESSION['stall_id'] ?? 0),
+            'stall_name'     => (string) ($_SESSION['stall_name'] ?? ''),
+            'stall_email'    => (string) ($_SESSION['stall_email'] ?? ''),
+            'stall_category' => (string) ($_SESSION['stall_category'] ?? ''),
         ]);
     } catch (Throwable $e) {
         auditLog('AUTH', 'Stall login error: ' . $e->getMessage());

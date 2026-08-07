@@ -739,7 +739,7 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
     <div class="pg-section-head">
         <div>
             <h3>Stalls</h3>
-            <p>Station logins for ticket scanning at each stall.</p>
+            <p>Station logins for ticket scanning. Multiple stalls can share the same email and password; scans count by category.</p>
         </div>
     </div>
     <?php if ($stallFlashError !== ''): ?>
@@ -750,7 +750,7 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
 
     <div class="pg-form-panel">
         <h4>Add New Stall</h4>
-        <p class="pg-form-hint">Pick a category that matches the benefits this stall serves. Categories come from event benefits; you can add a new one if needed.</p>
+        <p class="pg-form-hint">Assign a category (food, drink, merch, etc.). Several booths can use the same email/password if they share a category team login.</p>
         <form method="POST" class="pg-form-grid" id="add-stall-form">
             <input type="hidden" name="global_action" value="add_stall">
             <div class="pg-field"><label>Stall Name</label><input type="text" name="s_name" required placeholder="Bar Station"></div>

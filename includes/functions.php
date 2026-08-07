@@ -32,11 +32,11 @@ function formatPrice(float|string $amount): string
 }
 
 /**
- * Process a basic ticket scan at a stall/station (no benefit matching).
+ * Process a basic ticket scan at a stall category (no benefit matching).
  *
- * One successful scan per ticket per stall. Station name comes from the logged-in stall.
+ * One successful scan per ticket per category. station_type stores the category slug.
  *
- * @param int|null $stallId Stall attribution for the scan row.
+ * @param int|null $stallId Optional stall row for audit attribution.
  * @return array<string, mixed>
  */
 function processTicketScan(PDO $db, string $ticketId, string $station, ?int $stallId = null): array
@@ -44,10 +44,10 @@ function processTicketScan(PDO $db, string $ticketId, string $station, ?int $sta
     ensureScansSchema($db);
 
     $ticketId = trim($ticketId);
-    $station = trim($station);
+    $category = normalizeBenefitCategory(trim($station), false) ?: trim($station);
 
-    if ($station === '') {
-        return ['status' => 'error', 'message' => 'Station is required.', 'http_code' => 400];
+    if ($category === '') {
+        return ['status' => 'error', 'message' => 'Category is required.', 'http_code' => 400];
     }
 
     $ticketStmt = $db->prepare(
@@ -72,37 +72,20 @@ function processTicketScan(PDO $db, string $ticketId, string $station, ?int $sta
         ];
     }
 
-    if ($stallId !== null) {
-        $countStmt = $db->prepare(
-            'SELECT COUNT(*) FROM scans
-             WHERE ticket_id = :ticket_id AND stall_id = :stall_id'
-        );
-        $countStmt->execute(['ticket_id' => $ticketId, 'stall_id' => $stallId]);
+    $countStmt = $db->prepare(
+        'SELECT COUNT(*) FROM scans
+         WHERE ticket_id = :ticket_id
+           AND LOWER(TRIM(station_type)) = LOWER(TRIM(:category))'
+    );
+    $countStmt->execute(['ticket_id' => $ticketId, 'category' => $category]);
 
-        $logsStmt = $db->prepare(
-            'SELECT scanned_at FROM scans
-             WHERE ticket_id = :ticket_id AND stall_id = :stall_id
-             ORDER BY scanned_at ASC'
-        );
-        $logsStmt->execute(['ticket_id' => $ticketId, 'stall_id' => $stallId]);
-    } else {
-        $countStmt = $db->prepare(
-            'SELECT COUNT(*) FROM scans
-             WHERE ticket_id = :ticket_id
-               AND stall_id IS NULL
-               AND LOWER(TRIM(station_type)) = LOWER(TRIM(:station))'
-        );
-        $countStmt->execute(['ticket_id' => $ticketId, 'station' => $station]);
-
-        $logsStmt = $db->prepare(
-            'SELECT scanned_at FROM scans
-             WHERE ticket_id = :ticket_id
-               AND stall_id IS NULL
-               AND LOWER(TRIM(station_type)) = LOWER(TRIM(:station))
-             ORDER BY scanned_at ASC'
-        );
-        $logsStmt->execute(['ticket_id' => $ticketId, 'station' => $station]);
-    }
+    $logsStmt = $db->prepare(
+        'SELECT scanned_at FROM scans
+         WHERE ticket_id = :ticket_id
+           AND LOWER(TRIM(station_type)) = LOWER(TRIM(:category))
+         ORDER BY scanned_at ASC'
+    );
+    $logsStmt->execute(['ticket_id' => $ticketId, 'category' => $category]);
 
     $used = (int) $countStmt->fetchColumn();
     $max = 1;
@@ -113,20 +96,21 @@ function processTicketScan(PDO $db, string $ticketId, string $station, ?int $sta
     );
 
     $distributorName = $ticket['allocated_distributor_name'] ?: 'Unassigned Stock';
+    $displayCategory = ucfirst($category);
 
     if ($used >= $max) {
         return [
             'status'    => 'limit_reached',
-            'message'   => 'Already scanned at this stall.',
+            'message'   => 'Already scanned in this category.',
             'used'      => $used,
             'max'       => $max,
             'http_code' => 200,
             'ticket'    => [
                 'id'          => $ticket['id'],
                 'distributor' => $distributorName,
-                'counts'      => [$station => $used],
-                'limits'      => [$station => $max],
-                'logs'        => [$station => $logs],
+                'counts'      => [$displayCategory => $used],
+                'limits'      => [$displayCategory => $max],
+                'logs'        => [$displayCategory => $logs],
             ],
         ];
     }
@@ -137,14 +121,14 @@ function processTicketScan(PDO $db, string $ticketId, string $station, ?int $sta
     );
     $insertStmt->execute([
         'ticket_id'    => $ticketId,
-        'station_type' => $station,
+        'station_type' => $category,
         'stall_id'     => $stallId,
     ]);
 
     $used++;
 
     $stallNote = $stallId !== null ? " stall_id={$stallId}" : '';
-    auditLog('SCAN', "Ticket {$ticketId} scanned at {$station} ({$used}/{$max}){$stallNote}");
+    auditLog('SCAN', "Ticket {$ticketId} scanned in category {$category} ({$used}/{$max}){$stallNote}");
 
     $logs[] = date('Y-m-d H:i:s');
 
@@ -156,9 +140,9 @@ function processTicketScan(PDO $db, string $ticketId, string $station, ?int $sta
         'ticket'    => [
             'id'          => $ticket['id'],
             'distributor' => $distributorName,
-            'counts'      => [$station => $used],
-            'limits'      => [$station => $max],
-            'logs'        => [$station => $logs],
+            'counts'      => [$displayCategory => $used],
+            'limits'      => [$displayCategory => $max],
+            'logs'        => [$displayCategory => $logs],
         ],
     ];
 }
@@ -1303,37 +1287,12 @@ function getStallsByEmail(PDO $db, string $email): array
 }
 
 /**
- * Ensure password differs from other stalls with the same email (login uses email + password).
+ * Stalls matching email + password (supports shared credentials across booths).
  *
- * @throws InvalidArgumentException
+ * @return array<int, array<string, mixed>>
  */
-function assertUniqueStallPasswordForEmail(PDO $db, string $email, string $password, ?int $excludeStallId = null): void
+function getStallsMatchingCredentials(PDO $db, string $email, string $password): array
 {
-    foreach (getStallsByEmail($db, $email) as $stall) {
-        if ($excludeStallId !== null && (int) $stall['id'] === $excludeStallId) {
-            continue;
-        }
-
-        if (password_verify($password, $stall['password_hash'])) {
-            throw new InvalidArgumentException(
-                'Another stall with this email already uses this password. Each stall needs a unique password.'
-            );
-        }
-    }
-}
-
-/**
- * Authenticate a stall by email/password. Returns stall row or null.
- *
- * @return array<string, mixed>|null
- */
-function authenticateStall(PDO $db, string $email, string $password): ?array
-{
-    $email = strtolower(trim($email));
-    if ($email === '' || $password === '') {
-        return null;
-    }
-
     $matches = [];
     foreach (getStallsByEmail($db, $email) as $stall) {
         if (password_verify($password, $stall['password_hash'])) {
@@ -1341,15 +1300,152 @@ function authenticateStall(PDO $db, string $email, string $password): ?array
         }
     }
 
-    if (count($matches) === 1) {
-        return $matches[0];
+    return $matches;
+}
+
+/**
+ * Unique normalized categories from a list of stall rows.
+ *
+ * @param array<int, array<string, mixed>> $stalls
+ * @return list<string>
+ */
+function stallCategoriesFromRows(array $stalls): array
+{
+    $categories = [];
+    foreach ($stalls as $stall) {
+        $cat = normalizeBenefitCategory((string) ($stall['category'] ?? 'general'), false) ?: 'general';
+        $categories[$cat] = $cat;
     }
 
-    if (count($matches) > 1) {
-        auditLog('AUTH', "Ambiguous stall login for {$email} (duplicate password across stalls)");
+    return array_values($categories);
+}
+
+/**
+ * Pick a representative stall row for an email + category (for session attribution).
+ *
+ * @param array<int, array<string, mixed>> $stalls
+ * @return array<string, mixed>|null
+ */
+function pickStallForCategory(array $stalls, string $category): ?array
+{
+    $category = normalizeBenefitCategory($category, false) ?: 'general';
+
+    foreach ($stalls as $stall) {
+        $stallCat = normalizeBenefitCategory((string) ($stall['category'] ?? 'general'), false) ?: 'general';
+        if ($stallCat === $category) {
+            return $stall;
+        }
     }
 
     return null;
+}
+
+/**
+ * Attempt stall login. Multiple stalls may share email/password; scans use category.
+ *
+ * @return array{
+ *   result: 'invalid'|'success'|'choose_category',
+ *   categories?: list<string>,
+ *   category?: string,
+ *   email?: string
+ * }
+ */
+function stallLoginAttempt(PDO $db, string $email, string $password): array
+{
+    $email = strtolower(trim($email));
+    if ($email === '' || $password === '') {
+        return ['result' => 'invalid'];
+    }
+
+    $matches = getStallsMatchingCredentials($db, $email, $password);
+    if ($matches === []) {
+        return ['result' => 'invalid'];
+    }
+
+    $categories = stallCategoriesFromRows($matches);
+
+    if (count($categories) === 1) {
+        $category = $categories[0];
+        $stall = pickStallForCategory($matches, $category);
+        if ($stall === null) {
+            return ['result' => 'invalid'];
+        }
+        establishStallSession($stall, $category);
+
+        return ['result' => 'success', 'category' => $category, 'email' => $email];
+    }
+
+    $_SESSION['stall_login_pending'] = [
+        'email'       => $email,
+        'stall_ids'   => array_map(static fn (array $s): int => (int) $s['id'], $matches),
+        'categories'  => $categories,
+        'verified_at' => time(),
+    ];
+
+    return ['result' => 'choose_category', 'categories' => $categories, 'email' => $email];
+}
+
+/**
+ * Complete login after the user picks a category (multi-category accounts).
+ */
+function completeStallCategoryLogin(PDO $db, string $category): bool
+{
+    $pending = $_SESSION['stall_login_pending'] ?? null;
+    if (
+        !is_array($pending)
+        || empty($pending['email'])
+        || empty($pending['stall_ids'])
+        || (time() - (int) ($pending['verified_at'] ?? 0)) > 600
+    ) {
+        unset($_SESSION['stall_login_pending']);
+
+        return false;
+    }
+
+    $category = normalizeBenefitCategory($category, false) ?: 'general';
+    $allowed = array_map(
+        static fn (string $c): string => normalizeBenefitCategory($c, false) ?: 'general',
+        (array) ($pending['categories'] ?? [])
+    );
+
+    if (!in_array($category, $allowed, true)) {
+        return false;
+    }
+
+    $placeholders = implode(',', array_fill(0, count($pending['stall_ids']), '?'));
+    $stmt = $db->prepare("SELECT id, name, email, category FROM stalls WHERE id IN ({$placeholders})");
+    $stmt->execute(array_values($pending['stall_ids']));
+    $stalls = $stmt->fetchAll();
+
+    $stall = pickStallForCategory($stalls, $category);
+    if ($stall === null) {
+        return false;
+    }
+
+    establishStallSession($stall, $category);
+    unset($_SESSION['stall_login_pending']);
+
+    return true;
+}
+
+/**
+ * Authenticate a stall by email/password (single-category accounts only).
+ *
+ * @return array<string, mixed>|null
+ */
+function authenticateStall(PDO $db, string $email, string $password): ?array
+{
+    $attempt = stallLoginAttempt($db, $email, $password);
+    if ($attempt['result'] !== 'success') {
+        return null;
+    }
+
+    return [
+        'id'       => (int) ($_SESSION['stall_id'] ?? 0),
+        'name'     => (string) ($_SESSION['stall_name'] ?? ''),
+        'email'    => (string) ($_SESSION['stall_email'] ?? ''),
+        'category' => (string) ($_SESSION['stall_category'] ?? ''),
+    ];
 }
 
 /**
@@ -1357,18 +1453,21 @@ function authenticateStall(PDO $db, string $email, string $password): ?array
  *
  * @param array<string, mixed> $stall
  */
-function establishStallSession(array $stall): void
+function establishStallSession(array $stall, ?string $categoryOverride = null): void
 {
     session_regenerate_id(true);
     clearCustomerSession();
+    unset($_SESSION['stall_login_pending']);
+
+    $category = $categoryOverride !== null
+        ? (normalizeBenefitCategory($categoryOverride, false) ?: 'general')
+        : (normalizeBenefitCategory((string) ($stall['category'] ?? 'general'), false) ?: 'general');
+
     $_SESSION['stall_authenticated'] = true;
     $_SESSION['stall_id'] = (int) $stall['id'];
     $_SESSION['stall_name'] = (string) $stall['name'];
     $_SESSION['stall_email'] = (string) $stall['email'];
-    $_SESSION['stall_category'] = normalizeBenefitCategory((string) ($stall['category'] ?? 'general'), false);
-    if ($_SESSION['stall_category'] === '') {
-        $_SESSION['stall_category'] = 'general';
-    }
+    $_SESSION['stall_category'] = $category;
     unset($_SESSION['station_pin_unlocked'], $_SESSION['pin_station_type']);
 }
 
@@ -1403,6 +1502,7 @@ function clearTerminalSession(): void
         $_SESSION['stall_name'],
         $_SESSION['stall_email'],
         $_SESSION['stall_category'],
+        $_SESSION['stall_login_pending'],
         $_SESSION['station_pin_unlocked'],
         $_SESSION['pin_station_type']
     );
@@ -1441,8 +1541,6 @@ function createStall(PDO $db, string $name, string $email, string $password, str
         throw new InvalidArgumentException('Invalid email address.');
     }
 
-    assertUniqueStallPasswordForEmail($db, $email, $password);
-
     $stmt = $db->prepare(
         'INSERT INTO stalls (name, email, password_hash, category) VALUES (:name, :email, :password_hash, :category) RETURNING id'
     );
@@ -1473,8 +1571,6 @@ function resetStallPassword(PDO $db, int $stallId, string $password): void
         throw new InvalidArgumentException('Stall not found.');
     }
 
-    assertUniqueStallPasswordForEmail($db, (string) $stall['email'], $password, $stallId);
-
     $stmt = $db->prepare('UPDATE stalls SET password_hash = :hash WHERE id = :id');
     $stmt->execute([
         'hash' => password_hash($password, PASSWORD_DEFAULT),
@@ -1503,8 +1599,8 @@ function deleteStall(PDO $db, int $stallId): void
 function resolveScanAuthContext(string $requestedStation): array
 {
     if (isStallAuthenticated()) {
-        $station = trim((string) ($_SESSION['stall_name'] ?? ''));
-        if ($station === '') {
+        $category = normalizeBenefitCategory((string) ($_SESSION['stall_category'] ?? ''), false);
+        if ($category === '') {
             return [
                 'allowed'  => false,
                 'station'  => '',
@@ -1515,8 +1611,8 @@ function resolveScanAuthContext(string $requestedStation): array
 
         return [
             'allowed'  => true,
-            'station'  => $station,
-            'stall_id' => (int) $_SESSION['stall_id'],
+            'station'  => $category,
+            'stall_id' => isset($_SESSION['stall_id']) ? (int) $_SESSION['stall_id'] : null,
         ];
     }
 
