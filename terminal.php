@@ -23,6 +23,9 @@ $show_welcome = isset($_GET['welcome']);
 
 try {
     $db = getDb();
+    ensureCategorySchema($db);
+    refreshStallSessionFromDb($db);
+    $stall_category = (string) ($_SESSION['stall_category'] ?? $stall_category);
     $terminal_event_id = resolveTerminalEventId($db);
     if ($terminal_event_id !== null) {
         $event_name = getCurrentEventName($db, $terminal_event_id);
@@ -30,6 +33,8 @@ try {
 } catch (Throwable $e) {
     // Database not configured yet
 }
+
+$display_category = $stall_category !== '' ? $stall_category : 'general';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -113,11 +118,11 @@ HTML
         <i class="fa-solid fa-shield-halved"></i>
       </div>
       <div style="min-width:0;">
-        <div id="header-station-title" class="pg-station-name"><?php echo htmlspecialchars(ucfirst($stall_category ?: 'stall')); ?></div>
+        <div id="header-station-title" class="pg-station-name" style="text-transform:capitalize;"><?php echo htmlspecialchars($display_category); ?></div>
         <div style="margin-top:0.2rem;">
           <span id="header-status-chip" class="pg-status-chip is-ready">Ready</span>
         </div>
-        <?php if ($stall_name !== '' && $stall_name !== $stall_category): ?>
+        <?php if ($stall_name !== '' && strtolower($stall_name) !== strtolower($display_category)): ?>
         <p class="pg-faint" style="margin:0.15rem 0 0;font-size:0.68rem;">Booth: <?php echo htmlspecialchars($stall_name); ?></p>
         <?php endif; ?>
         <?php if ($stall_email !== ''): ?>
@@ -148,10 +153,20 @@ HTML
     </div>
 
     <div id="panel-scan">
-    <div class="pg-panel" style="margin-bottom:0.85rem;">
+    <div class="pg-panel" style="margin-bottom:0.85rem;" id="scan-category-panel">
       <p class="pg-section-title" style="margin:0 0 0.25rem;">Scanning category</p>
-      <p style="margin:0;font-weight:700;font-size:1rem;text-transform:capitalize;"><?php echo htmlspecialchars($stall_category ?: 'general'); ?></p>
-      <p class="pg-faint" style="margin:0.35rem 0 0;font-size:0.75rem;">Each ticket can be scanned once per category (shared across booths in this category).</p>
+      <p id="scan-category-label" style="margin:0;font-weight:700;font-size:1rem;text-transform:capitalize;"><?php echo htmlspecialchars($display_category); ?></p>
+      <p class="pg-faint" style="margin:0.35rem 0 0;font-size:0.75rem;">Benefits shown below are filtered to this category for each ticket.</p>
+    </div>
+
+    <div id="benefit-select-panel" class="pg-panel pg-benefit-panel is-disabled">
+      <label for="scan-benefit-select" class="pg-label">Benefit to redeem</label>
+      <p id="benefit-panel-hint" class="pg-faint" style="margin:0 0 0.55rem;font-size:0.75rem;">Scan or enter a ticket ID to load benefits for that tier.</p>
+      <div class="pg-alert hidden" id="no-benefits-msg" style="margin-bottom:0.55rem;"></div>
+      <p id="benefit-tier-meta" class="pg-faint hidden" style="margin:0 0 0.45rem;font-size:0.72rem;font-weight:600;"></p>
+      <select id="scan-benefit-select" class="pg-select pg-select--scan" disabled>
+        <option value="">Select benefit…</option>
+      </select>
     </div>
 
     <div class="pg-scanner" id="scanner-panel">
@@ -176,6 +191,17 @@ HTML
       <p id="scan-result-body" class="pg-result__body"></p>
     </div>
 
+    <details id="benefits-details" class="pg-details hidden">
+      <summary>Benefit usage</summary>
+      <div class="pg-details__body">
+        <div style="display:flex;justify-content:flex-end;margin-bottom:0.55rem;">
+          <span id="benefits-meta-tier" class="pg-faint" style="font-size:0.68rem;font-weight:600;"></span>
+        </div>
+        <div id="benefits-usage-list" style="display:grid;gap:0.55rem;"></div>
+        <div id="benefits-usage-panel" class="hidden"></div>
+      </div>
+    </details>
+
     <details id="audit-details" class="pg-details hidden">
       <summary>Last scan details</summary>
       <div class="pg-details__body">
@@ -193,6 +219,10 @@ HTML
               <span class="pg-section-title" style="display:block;margin-bottom:0.25rem;">Scanned by</span>
               <span id="audit-stall" style="font-weight:600;color:var(--pg-ok);">-</span>
             </div>
+            <div id="audit-category-row" style="grid-column:1 / -1;">
+              <span class="pg-section-title" style="display:block;margin-bottom:0.25rem;">Category</span>
+              <span id="audit-category" style="font-weight:600;text-transform:capitalize;"><?php echo htmlspecialchars($display_category); ?></span>
+            </div>
           </div>
           <div style="margin-top:0.85rem;">
             <span class="pg-section-title" style="display:block;margin-bottom:0.35rem;">History</span>
@@ -206,7 +236,7 @@ HTML
     <div id="panel-status" class="hidden">
       <div class="pg-panel pg-status-lookup">
         <p class="pg-section-title" style="margin:0 0 0.35rem;">Check ticket status</p>
-        <p class="pg-faint" style="margin:0 0 0.75rem;font-size:0.75rem;">Read-only lookup — does not record a scan.</p>
+        <p class="pg-faint" style="margin:0 0 0.75rem;font-size:0.75rem;">Read-only lookup — does not redeem benefits or record a scan.</p>
         <div class="pg-manual-row">
           <input type="text" id="status-ticket-id" class="pg-input" placeholder="Ticket ID" autocomplete="off" enterkeyhint="search">
           <button type="button" onclick="lookupTicketStatus()" class="pg-btn pg-btn--process">Look up</button>
@@ -228,18 +258,27 @@ HTML
 
 
   <script>
-    let activeStationType = <?php echo json_encode($stall_category ?: 'general'); ?>;
+    let activeStationType = <?php echo json_encode($stall_name); ?>;
     let html5QrcodeScanner = null;
     let terminalView = 'scan';
     let flashTimer = null;
     const BASE_URL = window.location.origin + window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/'));
-    const STALL_CATEGORY = <?php echo json_encode($stall_category ?: 'general'); ?>;
+    const STALL_NAME = <?php echo json_encode($stall_name); ?>;
+    const STALL_CATEGORY = <?php echo json_encode($display_category); ?>;
     const SHOW_WELCOME = <?php echo $show_welcome ? 'true' : 'false'; ?>;
+    let loadedTicketId = null;
+    let tierHasBenefits = false;
+
+    function formatCategoryLabel(category) {
+      const value = String(category || '').trim();
+      if (!value) return '';
+      return value.charAt(0).toUpperCase() + value.slice(1);
+    }
 
     document.addEventListener('DOMContentLoaded', () => {
       localStorage.setItem('passgate_auth', 'stall');
       if (SHOW_WELCOME) {
-        showToast(`Welcome — ${STALL_CATEGORY} station`, 'success');
+        showToast(`Welcome — ${formatCategoryLabel(STALL_CATEGORY)} station`, 'success');
       }
     });
 
@@ -254,19 +293,200 @@ HTML
       }
     }
 
+    function getSelectedBenefit() {
+      const el = document.getElementById('scan-benefit-select');
+      return el ? el.value.trim() : '';
+    }
+
     function normalizeTicketId(ticketId) {
       let cleanedId = ticketId.trim();
       if (/^\d+$/.test(cleanedId)) cleanedId = cleanedId.padStart(6, '0');
       return cleanedId;
     }
 
-    function onTicketCaptured(ticketId) {
+    function setBenefitPanelEnabled(enabled) {
+      document.getElementById('benefit-select-panel')?.classList.toggle('is-disabled', !enabled);
+      const sel = document.getElementById('scan-benefit-select');
+      if (sel) sel.disabled = !enabled;
+    }
+
+    function setScanControlsEnabled(enabled) {
+      document.getElementById('scanner-panel')?.classList.toggle('pg-benefit-panel', !enabled);
+      document.getElementById('scanner-panel')?.classList.toggle('is-disabled', !enabled);
+      document.getElementById('manual-panel')?.classList.toggle('pg-benefit-panel', !enabled);
+      document.getElementById('manual-panel')?.classList.toggle('is-disabled', !enabled);
+      const cameraBtn = document.getElementById('camera-trigger-btn');
+      if (cameraBtn) cameraBtn.disabled = !enabled;
+      const manualInput = document.getElementById('manual-ticket-id');
+      const manualBtn = document.querySelector('#manual-panel .pg-btn--process');
+      if (manualInput) manualInput.disabled = !enabled;
+      if (manualBtn) manualBtn.disabled = !enabled;
+    }
+
+    function clearBenefitDropdown() {
+      const sel = document.getElementById('scan-benefit-select');
+      if (!sel) return;
+      sel.innerHTML = '<option value="">Select benefit…</option>';
+      sel.value = '';
+      sel.disabled = true;
+      loadedTicketId = null;
+      tierHasBenefits = false;
+      document.getElementById('benefit-tier-meta')?.classList.add('hidden');
+      document.getElementById('no-benefits-msg')?.classList.add('hidden');
+      setBenefitPanelEnabled(false);
+    }
+
+    function populateBenefitDropdown(benefits, meta) {
+      const sel = document.getElementById('scan-benefit-select');
+      const msg = document.getElementById('no-benefits-msg');
+      const metaEl = document.getElementById('benefit-tier-meta');
+      if (!sel) return;
+
+      sel.innerHTML = '<option value="">Select benefit…</option>';
+      benefits.forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = b.name;
+        opt.textContent = b.name;
+        opt.dataset.benefitId = String(b.id);
+        sel.appendChild(opt);
+      });
+      sel.disabled = false;
+      tierHasBenefits = benefits.length > 0;
+      setBenefitPanelEnabled(tierHasBenefits);
+
+      if (metaEl && meta) {
+        const category = payload.stall_category || STALL_CATEGORY;
+        const parts = [
+          category ? `Category: ${formatCategoryLabel(category)}` : '',
+          meta.event_name,
+          meta.tier_name,
+        ].filter(Boolean);
+        metaEl.textContent = parts.join(' · ');
+        metaEl.classList.toggle('hidden', parts.length === 0);
+      }
+
+      if (msg) {
+        msg.classList.add('hidden');
+        msg.textContent = '';
+      }
+
+      preselectBenefitMatch(STALL_NAME);
+    }
+
+    function showNoBenefitsMessage(message, disableScanning = true) {
+      const msg = document.getElementById('no-benefits-msg');
+      const metaEl = document.getElementById('benefit-tier-meta');
+      clearBenefitDropdown();
+      tierHasBenefits = false;
+      if (disableScanning) {
+        setScanControlsEnabled(false);
+      } else {
+        setScanControlsEnabled(true);
+      }
+      if (msg) {
+        msg.textContent = message;
+        msg.classList.remove('hidden');
+      }
+      if (metaEl) metaEl.classList.add('hidden');
+      document.getElementById('benefit-select-panel')?.classList.remove('is-disabled');
+    }
+
+    async function fetchBenefitsForTicket(ticketId) {
+      const cleanedId = normalizeTicketId(ticketId);
+      let url = `${BASE_URL}/api.php?action=get_benefits&ticket_id=${encodeURIComponent(cleanedId)}`;
+      if (STALL_CATEGORY) {
+        url += `&stall_category=${encodeURIComponent(STALL_CATEGORY)}`;
+      }
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok || data.status !== 'success') {
+        throw new Error(data.message || 'Ticket not found');
+      }
+      return { cleanedId, payload: data.data };
+    }
+
+    async function prepareTicketScan(ticketId) {
+      const cleanedId = normalizeTicketId(ticketId);
+      if (loadedTicketId === cleanedId && tierHasBenefits) {
+        setScanControlsEnabled(true);
+        return true;
+      }
+
+      setScanControlsEnabled(true);
+      clearBenefitDropdown();
+      loadedTicketId = cleanedId;
+
+      try {
+        const { payload } = await fetchBenefitsForTicket(cleanedId);
+        const benefits = payload.benefits || [];
+
+        if (benefits.length === 0) {
+          const msg = STALL_CATEGORY
+            ? 'No benefits available for your stall for this ticket.'
+            : 'No benefits available for this ticket\'s tier.';
+          showNoBenefitsMessage(msg);
+          showToast(msg, 'error');
+          return false;
+        }
+
+        populateBenefitDropdown(benefits, payload);
+        document.getElementById('benefit-panel-hint').textContent = 'Choose the benefit to redeem for this ticket.';
+        return true;
+      } catch (err) {
+        loadedTicketId = null;
+        showNoBenefitsMessage(err.message || 'Ticket not found.', false);
+        showToast(err.message || 'Ticket not found', 'error');
+        return false;
+      }
+    }
+
+    function requireBenefitSelected() {
+      if (!tierHasBenefits) {
+        showToast('Load a ticket first to see available benefits', 'error');
+        return false;
+      }
+      const benefit = getSelectedBenefit();
+      if (!benefit) {
+        showToast('Select a benefit before scanning', 'error');
+        document.getElementById('scan-benefit-select')?.focus();
+        return false;
+      }
+      return true;
+    }
+
+    function preselectBenefitMatch(label) {
+      const sel = document.getElementById('scan-benefit-select');
+      if (!sel || !label) return false;
+      const norm = label.trim().toLowerCase();
+      for (const opt of sel.options) {
+        if (opt.value && opt.value.toLowerCase() === norm) {
+          sel.value = opt.value;
+          return true;
+        }
+      }
+      return false;
+    }
+
+    async function onTicketCaptured(ticketId) {
       if (!ticketId.trim()) return;
-      executeScanTransaction(normalizeTicketId(ticketId));
+      const ready = await prepareTicketScan(ticketId);
+      if (!ready) return;
+
+      if (getSelectedBenefit()) {
+        executeScanTransaction(normalizeTicketId(ticketId));
+        return;
+      }
+
+      showToast('Select a benefit to redeem', 'warn');
+      document.getElementById('scan-benefit-select')?.focus();
     }
 
     document.getElementById('manual-ticket-id').addEventListener('keypress', (e) => { if (e.key === 'Enter') processManualScan(); });
     document.getElementById('status-ticket-id')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') lookupTicketStatus(); });
+    document.getElementById('scan-benefit-select')?.addEventListener('change', () => {
+      if (!loadedTicketId || !getSelectedBenefit()) return;
+      executeScanTransaction(loadedTicketId);
+    });
 
     function stopCameraEngineImmediate() {
       if (html5QrcodeScanner && html5QrcodeScanner.isScanning) {
@@ -369,13 +589,18 @@ HTML
       const holderSub = d.holder_detail && d.holder_detail !== d.holder_label
         ? `<span class="pg-faint" style="display:block;font-size:0.72rem;margin-top:0.15rem;">${escapeHtml(d.holder_detail)}</span>`
         : '';
-      const benefitsHtml = (d.scans || []).map(s => {
-        const when = s.scanned_at ? escapeHtml(String(s.scanned_at).slice(0, 16)) : '—';
-        return `<div class="pg-benefit">
+      const benefitsHtml = (d.benefits || []).map(b => {
+        const full = b.used >= b.max;
+        const pct = b.max > 0 ? Math.min(100, Math.round((b.used / b.max) * 100)) : 0;
+        const last = b.last_scan ? `<span class="pg-faint" style="display:block;font-size:0.65rem;margin-top:0.2rem;">Last: ${escapeHtml(String(b.last_scan).slice(0, 16))}</span>` : '';
+        const cat = b.category ? `<span class="pg-faint" style="font-size:0.65rem;text-transform:capitalize;margin-left:0.35rem;">(${escapeHtml(formatCategoryLabel(b.category))})</span>` : '';
+        return `<div class="pg-benefit${full ? ' is-full' : ''}">
           <div style="display:flex;justify-content:space-between;gap:0.5rem;">
-            <span style="font-weight:600;">${escapeHtml(s.stall || 'Unknown stall')}</span>
-            <span class="pg-mono" style="font-size:0.72rem;">${when}</span>
+            <span style="font-weight:600;">${escapeHtml(b.name)}${cat}</span>
+            <span class="pg-mono" style="font-size:0.72rem;font-weight:700;">${b.used}/${b.max}</span>
           </div>
+          <div class="pg-bar"><div class="pg-bar__fill${full ? ' is-full' : ''}" style="width:${pct}%"></div></div>
+          ${last}
         </div>`;
       }).join('');
 
@@ -390,8 +615,8 @@ HTML
           <div><span class="pg-section-title" style="display:block;margin-bottom:0.15rem;">Physical #</span><strong>#${d.physical_number}</strong></div>
           <div><span class="pg-section-title" style="display:block;margin-bottom:0.15rem;">Assigned to</span><strong>${escapeHtml(d.holder_label)}</strong>${holderSub}</div>
         </div>
-        <h4 class="pg-section-title" style="margin:0 0 0.45rem;">Scan history (${d.scan_count || 0})</h4>
-        <div style="display:grid;gap:0.45rem;">${benefitsHtml || '<p class="pg-muted" style="margin:0;">Not scanned yet.</p>'}</div>
+        <h4 class="pg-section-title" style="margin:0 0 0.45rem;">Benefits</h4>
+        <div style="display:grid;gap:0.45rem;">${benefitsHtml || '<p class="pg-muted" style="margin:0;">No benefits on this tier.</p>'}</div>
       `;
       resultEl.classList.remove('hidden');
     }
@@ -424,61 +649,112 @@ HTML
         window.location.replace(`${BASE_URL}/staff_login.php?next=terminal.php`);
         return;
       }
+      if (!requireBenefitSelected()) return;
 
+      const selectedBenefit = getSelectedBenefit();
       let cleanedId = ticketId.trim();
       if (/^\d+$/.test(cleanedId)) cleanedId = cleanedId.padStart(6, '0');
 
       const resultCard = document.getElementById('scan-result-card');
       const title = document.getElementById('scan-result-title');
       const body = document.getElementById('scan-result-body');
+      const benefitsDetails = document.getElementById('benefits-details');
       const auditDetails = document.getElementById('audit-details');
 
       resultCard.className = 'pg-result hidden';
+      benefitsDetails.classList.add('hidden');
       auditDetails.classList.add('hidden');
 
       fetch(`${BASE_URL}/api.php?action=scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticket_id: cleanedId })
+        body: JSON.stringify({ ticket_id: cleanedId, station: selectedBenefit })
       })
       .then(async response => {
         const data = await response.json();
         if (response.ok || data.status === 'already_scanned' || data.status === 'limit_reached') {
           const isGranted = data.status === 'granted';
+          const categoryLabel = formatCategoryLabel(data.stall_category || STALL_CATEGORY);
           showFlash(
             isGranted ? 'ok' : 'warn',
-            isGranted ? 'GRANTED' : 'ALREADY SCANNED',
-            isGranted ? 'Ticket verified at this stall.' : 'This ticket was already scanned here.',
+            isGranted ? 'GRANTED' : 'LIMIT REACHED',
+            isGranted
+              ? `Benefit approved (${categoryLabel}).`
+              : 'Already claimed or max uses reached. Send to admin if needed.',
             cleanedId
           );
           resultCard.className = 'pg-result ' + (isGranted ? 'pg-result--ok' : 'pg-result--warn');
           title.innerHTML = isGranted
             ? '<i class="fa-solid fa-circle-check mr-1.5"></i> Access granted'
-            : '<i class="fa-solid fa-circle-minus mr-1.5"></i> Already scanned';
-          body.innerText = isGranted ? 'Ticket verified.' : 'This ticket cannot be scanned again at this stall.';
+            : '<i class="fa-solid fa-circle-minus mr-1.5"></i> Limit reached';
+          body.innerText = isGranted ? 'Ticket verified.' : 'This benefit cannot be used again.';
           auditDetails.classList.remove('hidden');
-          populateAuditDossier(data.ticket, STALL_CATEGORY);
+          populateAuditDossier(data.ticket, selectedBenefit);
           if (data.stall_name) {
             document.getElementById('audit-stall-row').classList.remove('hidden');
             document.getElementById('audit-stall').innerText = data.stall_name;
           } else {
             document.getElementById('audit-stall-row').classList.add('hidden');
           }
-          document.getElementById('manual-ticket-id').value = '';
+          const auditCategory = document.getElementById('audit-category');
+          if (auditCategory) {
+            auditCategory.textContent = formatCategoryLabel(data.stall_category || STALL_CATEGORY);
+          }
+          renderBenefitsUsagePanel(data);
+          resetScanFormForNextGuest();
         } else {
           throw new Error(data.message || 'An error occurred');
         }
       })
       .catch(() => {
-        showFlash('deny', 'DENIED', 'Ticket not found or not valid.', cleanedId);
+        showFlash('deny', 'DENIED', 'Ticket not found or not valid for this station.', cleanedId);
         resultCard.className = 'pg-result pg-result--deny';
         title.innerHTML = '<i class="fa-solid fa-triangle-exclamation mr-1.5"></i> Access denied';
         body.innerHTML = `Ticket <strong class="pg-mono">${cleanedId}</strong> was not found.`;
         auditDetails.classList.remove('hidden');
+        benefitsDetails.classList.add('hidden');
         document.getElementById('audit-id').innerText = cleanedId;
         document.getElementById('audit-dist').innerText = 'N/A';
         document.getElementById('audit-logs-box').innerHTML = '<div class="pg-faint" style="font-style:italic;padding:0.4rem;">No matching ticket.</div>';
       });
+    }
+
+    function resetScanFormForNextGuest() {
+      document.getElementById('manual-ticket-id').value = '';
+      document.getElementById('benefit-panel-hint').textContent = 'Scan or enter a ticket ID to load benefits for that tier.';
+      clearBenefitDropdown();
+      setScanControlsEnabled(true);
+    }
+
+    function renderBenefitsUsagePanel(data) {
+      const details = document.getElementById('benefits-details');
+      const list = document.getElementById('benefits-usage-list');
+      const meta = document.getElementById('benefits-meta-tier');
+      const summary = data.benefits_summary || [];
+      if (summary.length === 0) {
+        details.classList.add('hidden');
+        return;
+      }
+      const tier = data.ticket_meta?.tier_name || '';
+      const event = data.ticket_meta?.event_name || '';
+      const category = formatCategoryLabel(data.stall_category || STALL_CATEGORY);
+      meta.textContent = [`Category: ${category}`, event, tier].filter(Boolean).join(' · ');
+      list.innerHTML = summary.map(b => {
+        const full = b.used >= b.max;
+        const pct = b.max > 0 ? Math.min(100, Math.round((b.used / b.max) * 100)) : 0;
+        const cat = b.category ? `<span class="pg-faint" style="font-size:0.65rem;text-transform:capitalize;margin-left:0.35rem;">(${escapeHtml(formatCategoryLabel(b.category))})</span>` : '';
+        return `<div class="pg-benefit${full ? ' is-full' : ''}">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-weight:600;">${escapeHtml(b.name)}${cat}</span>
+            <span class="pg-mono" style="font-size:0.72rem;font-weight:700;color:${full ? 'var(--pg-deny)' : 'var(--pg-text)'};">${b.used}/${b.max}</span>
+          </div>
+          <div class="pg-bar"><div class="pg-bar__fill${full ? ' is-full' : ''}" style="width:${pct}%"></div></div>
+          ${full
+            ? '<span style="font-size:0.65rem;font-weight:700;color:var(--pg-deny);">Fully used</span>'
+            : `<span style="font-size:0.65rem;color:var(--pg-ok);">${b.max - b.used} remaining</span>`}
+        </div>`;
+      }).join('');
+      details.classList.remove('hidden');
     }
 
     function escapeHtml(str) {
@@ -525,7 +801,10 @@ HTML
     async function processManualScan() {
       const el = document.getElementById('manual-ticket-id');
       if (!el.value.trim()) return;
-      executeScanTransaction(el.value.trim());
+      await onTicketCaptured(el.value.trim());
+      if (loadedTicketId && getSelectedBenefit()) {
+        el.value = '';
+      }
     }
   </script>
 </body>

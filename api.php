@@ -81,13 +81,31 @@ function handleScan(PDO $db): void
         $ticketId = str_pad($ticketId, 6, '0', STR_PAD_LEFT);
     }
 
-    $result = processTicketScan($db, $ticketId, $station, $stallId);
+    $stallCategory = isStallAuthenticated()
+        ? (string) ($_SESSION['stall_category'] ?? '')
+        : null;
+
+    $result = processTicketScan($db, $ticketId, $station, $stallId, $stallCategory ?: null);
     $httpCode = $result['http_code'] ?? 200;
     unset($result['http_code']);
 
     if (($result['status'] ?? '') !== 'error') {
         $details = getTicketDetails($db, $ticketId);
         if ($details !== null) {
+            $summaryBenefits = $details['benefits'];
+            if (isStallAuthenticated() && $stallCategory) {
+                $summaryBenefits = filterBenefitsForStallCategory($summaryBenefits, $stallCategory);
+            }
+
+            $result['benefits_summary'] = array_map(
+                static fn (array $b): array => [
+                    'name'     => trim($b['name']),
+                    'category' => normalizeBenefitCategory((string) ($b['category'] ?? 'general'), false) ?: 'general',
+                    'used'     => (int) $b['used'],
+                    'max'      => (int) $b['max_uses'],
+                ],
+                $summaryBenefits
+            );
             $result['ticket_meta'] = [
                 'event_name'      => $details['ticket']['event_name'] ?? '',
                 'tier_name'       => $details['ticket']['tier_name'] ?? '',
@@ -97,6 +115,7 @@ function handleScan(PDO $db): void
 
         if (isStallAuthenticated()) {
             $result['stall_name'] = (string) ($_SESSION['stall_name'] ?? '');
+            $result['stall_category'] = (string) ($_SESSION['stall_category'] ?? '');
         }
     }
 
