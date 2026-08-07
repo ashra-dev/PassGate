@@ -11,30 +11,25 @@ if (isDistributorAuthenticated() && ($_SESSION['distributor_role'] ?? '') === 'a
     safeRedirect('distributors.php');
 }
 
+if (!isStallAuthenticated()) {
+    safeRedirect('staff_login.php?next=terminal.php');
+}
+
 $event_name = 'PassGate';
-$benefits_list = [];
-$is_authenticated = isDistributorAuthenticated();
-$is_stall_authenticated = isStallAuthenticated();
-$auth_role = $_SESSION['distributor_role'] ?? '';
-$stall_name = $_SESSION['stall_name'] ?? '';
-$stall_email = $_SESSION['stall_email'] ?? '';
-$pin_unlocked = !empty($_SESSION['station_pin_unlocked']);
-$pin_station = $_SESSION['pin_station_type'] ?? '';
-$station_pin_enabled = env('STATION_PIN_ENABLED', '1') === '1';
+$stall_name = (string) ($_SESSION['stall_name'] ?? '');
+$stall_email = (string) ($_SESSION['stall_email'] ?? '');
+$stall_category = (string) ($_SESSION['stall_category'] ?? '');
+$show_welcome = isset($_GET['welcome']);
 
 try {
     $db = getDb();
     $terminal_event_id = resolveTerminalEventId($db);
     if ($terminal_event_id !== null) {
         $event_name = getCurrentEventName($db, $terminal_event_id);
-        $benefits_list = getDistinctBenefitNames($db, $terminal_event_id);
     }
 } catch (Throwable $e) {
-    // Database not configured yet - empty benefits list
+    // Database not configured yet
 }
-
-$app_debug = env('APP_DEBUG', '0') === '1';
-$smtp_configured = trim(env('MAIL_HOST', '') ?? '') !== '';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -47,6 +42,48 @@ $smtp_configured = trim(env('MAIL_HOST', '') ?? '') !== '';
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="PassGate">
   <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/1037/1037237.png">
+  <style>
+    .pg-select--scan {
+      min-height: 3.25rem;
+      font-size: 1rem;
+      font-weight: 600;
+      padding: 0.75rem 1rem;
+      border-radius: var(--pg-radius-sm, 0.75rem);
+      width: 100%;
+    }
+    .pg-benefit-panel.is-disabled { opacity: 0.55; pointer-events: none; }
+    .pg-terminal-tabs {
+      display: flex;
+      gap: 0.35rem;
+      margin-bottom: 0.85rem;
+      padding: 0.25rem;
+      background: rgba(255,255,255,0.85);
+      border: 1px solid var(--pg-border);
+      border-radius: 999px;
+    }
+    .pg-terminal-tabs__btn {
+      flex: 1;
+      border: none;
+      background: transparent;
+      padding: 0.55rem 0.75rem;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 800;
+      color: var(--pg-text-muted);
+      cursor: pointer;
+    }
+    .pg-terminal-tabs__btn.is-active {
+      color: #fff;
+      background: linear-gradient(180deg, #3b82f6, #2563eb);
+    }
+    .pg-status-lookup { display: grid; gap: 0.85rem; }
+    .pg-status-card {
+      border: 1px solid var(--pg-border);
+      border-radius: var(--pg-radius-sm);
+      padding: 1rem;
+      background: #fff;
+    }
+  </style>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
@@ -60,97 +97,7 @@ HTML
 </head>
 <body class="pg-body pg-shell">
 
-  <div id="login-overlay" class="pg-overlay">
-    <div class="pg-card pg-card--auth">
-      <div style="text-align:center;margin-bottom:1.25rem;">
-        <div class="pg-brand-mark" style="margin:0 auto 0.85rem;font-size:1.1rem;">
-          <i class="fa-solid fa-ticket"></i>
-        </div>
-        <h1 class="pg-brand" style="font-size:1.85rem;margin:0;">PassGate</h1>
-        <?php if ($event_name !== '' && strcasecmp($event_name, 'PassGate') !== 0): ?>
-        <p class="pg-muted" style="margin:0.45rem 0 0;font-size:0.9rem;font-weight:700;"><?php echo htmlspecialchars($event_name); ?></p>
-        <?php endif; ?>
-        <p class="pg-faint" style="margin:0.4rem 0 0;font-size:0.8rem;">Sign in to start scanning</p>
-      </div>
-
-      <div id="fields-stall">
-        <label class="pg-label" for="login-stall-email">Stall email</label>
-        <input type="email" id="login-stall-email" class="pg-input" placeholder="stall@event.com" autocomplete="username">
-        <label class="pg-label" for="login-stall-password" style="margin-top:0.85rem;">Password</label>
-        <input type="password" id="login-stall-password" class="pg-input" autocomplete="current-password">
-      </div>
-
-      <div id="fields-distributor" class="hidden">
-        <?php if ($app_debug || !$smtp_configured): ?>
-        <div class="pg-dev-ribbon">
-          Dev mode: login links go to <code class="pg-mono">dev_login.log</code>, not email.
-        </div>
-        <?php endif; ?>
-        <label class="pg-label" for="login-email">Admin / distributor email</label>
-        <input type="email" id="login-email" class="pg-input" placeholder="you@company.com">
-        <p id="login-link-sent" class="pg-hint pg-hint--ok hidden">
-          <?php echo ($app_debug || !$smtp_configured)
-              ? 'Link saved to dev_login.log - open that file and paste the URL.'
-              : 'Check your email for a login link.'; ?>
-        </p>
-      </div>
-
-      <?php if ($station_pin_enabled): ?>
-      <div id="fields-station" class="hidden">
-        <label class="pg-label" for="login-station-select">Station</label>
-        <select id="login-station-select" class="pg-select">
-          <?php if ($benefits_list === []): ?>
-            <option value="">No stations configured yet</option>
-          <?php else: ?>
-            <?php foreach ($benefits_list as $benefit): ?>
-              <option value="<?php echo htmlspecialchars($benefit); ?>"><?php echo htmlspecialchars($benefit); ?></option>
-            <?php endforeach; ?>
-          <?php endif; ?>
-        </select>
-        <label class="pg-label" for="login-pin" style="margin-top:0.85rem;">PIN</label>
-        <input type="password" id="login-pin" maxlength="8" class="pg-input" style="text-align:center;font-weight:700;letter-spacing:0.2em;">
-        <p class="pg-hint pg-hint--warn">Demo unlock only - use stall login for real events.</p>
-      </div>
-      <?php endif; ?>
-
-      <div style="margin-top:1.1rem;">
-        <button type="button" id="auth-btn" onclick="handleAuth()" class="pg-btn pg-btn--gold">Start scanning</button>
-      </div>
-
-      <button type="button" id="more-login-toggle" class="pg-more-toggle" onclick="toggleMoreLogin()">
-        More options (Admin / PIN)
-      </button>
-      <div id="more-login-panel" class="hidden" style="margin-top:0.35rem;">
-        <div class="pg-segment" role="tablist">
-          <button type="button" id="btn-mode-stall" onclick="setLoginMode('stall')" class="pg-segment__btn is-active">Stall</button>
-          <button type="button" id="btn-mode-distributor" onclick="setLoginMode('distributor')" class="pg-segment__btn">Admin</button>
-          <?php if ($station_pin_enabled): ?>
-          <button type="button" id="btn-mode-station" onclick="setLoginMode('station')" class="pg-segment__btn">PIN</button>
-          <?php endif; ?>
-        </div>
-        <p class="pg-links" style="margin-top:0.35rem;">
-          <a href="index.php">Home</a>
-          &middot; <a href="manual_login.php">Paste login token</a>
-          &middot; <a href="stall_login.php">Stall login page</a>
-        </p>
-      </div>
-
-      <?php if ($is_stall_authenticated): ?>
-      <p class="pg-hint pg-hint--ok" style="text-align:center;">
-        Stall ready: <?php echo htmlspecialchars($stall_name); ?>.
-        <a href="logout.php">Logout</a>
-      </p>
-      <?php elseif ($is_authenticated): ?>
-      <p class="pg-hint pg-hint--ok" style="text-align:center;">
-        Signed in as <?php echo htmlspecialchars($_SESSION['distributor_email'] ?? ''); ?>.
-        <?php if ($auth_role === 'admin'): ?>
-          <a href="distributors.php">Open dashboard</a> &middot;
-        <?php endif; ?>
-        <a href="logout.php">Logout</a>
-      </p>
-      <?php endif; ?>
-    </div>
-  </div>
+  <?php passgateRenderStaffNav('scanner'); ?>
 
   <div id="scan-flash" class="pg-flash" role="status" aria-live="assertive" onclick="dismissFlash()">
     <div id="scan-flash-icon" class="pg-flash__icon"></div>
@@ -166,14 +113,22 @@ HTML
         <i class="fa-solid fa-shield-halved"></i>
       </div>
       <div style="min-width:0;">
-        <div id="header-station-title" class="pg-station-name">Terminal locked</div>
+        <div id="header-station-title" class="pg-station-name"><?php echo htmlspecialchars($stall_name); ?></div>
         <div style="margin-top:0.2rem;">
-          <span id="header-status-chip" class="pg-status-chip is-locked">Locked</span>
+          <span id="header-status-chip" class="pg-status-chip is-ready">Ready</span>
         </div>
+        <?php if ($stall_email !== ''): ?>
+        <p class="pg-faint" style="margin:0.15rem 0 0;font-size:0.68rem;"><?php echo htmlspecialchars($stall_email); ?></p>
+        <?php endif; ?>
+        <?php if ($stall_category !== ''): ?>
+        <p class="pg-faint" style="margin:0.1rem 0 0;font-size:0.65rem;text-transform:capitalize;">
+          Category: <?php echo htmlspecialchars($stall_category); ?>
+        </p>
+        <?php endif; ?>
       </div>
     </div>
     <button type="button" onclick="terminateSessionLogout()" class="pg-btn pg-btn--ghost pg-btn--sm" style="min-height:2.4rem;min-width:4.2rem;">
-      <i class="fa-solid fa-lock"></i> Lock
+      <i class="fa-solid fa-right-from-bracket"></i> Log out
     </button>
   </header>
 
@@ -185,7 +140,27 @@ HTML
       </div>
     </div>
 
-    <div class="pg-scanner">
+    <div class="pg-terminal-tabs" role="tablist" aria-label="Terminal mode">
+      <button type="button" id="tab-scan" class="pg-terminal-tabs__btn is-active" onclick="switchTerminalMode('scan')">
+        <i class="fa-solid fa-qrcode"></i> Scan
+      </button>
+      <button type="button" id="tab-status" class="pg-terminal-tabs__btn" onclick="switchTerminalMode('status')">
+        <i class="fa-solid fa-magnifying-glass"></i> Check status
+      </button>
+    </div>
+
+    <div id="panel-scan">
+    <div id="benefit-select-panel" class="pg-panel pg-benefit-panel is-disabled">
+      <label for="scan-benefit-select" class="pg-label">Benefit to redeem</label>
+      <p id="benefit-panel-hint" class="pg-faint" style="margin:0 0 0.55rem;font-size:0.75rem;">Scan or enter a ticket ID to load benefits for that tier.</p>
+      <div class="pg-alert hidden" id="no-benefits-msg" style="margin-bottom:0.55rem;"></div>
+      <p id="benefit-tier-meta" class="pg-faint hidden" style="margin:0 0 0.45rem;font-size:0.72rem;font-weight:600;"></p>
+      <select id="scan-benefit-select" class="pg-select pg-select--scan" disabled>
+        <option value="">Select benefit…</option>
+      </select>
+    </div>
+
+    <div class="pg-scanner" id="scanner-panel">
       <div id="scanner-view-element" style="width:100%;height:100%;"></div>
       <div id="video-placeholder" class="pg-scanner__placeholder">
         <i class="fa-solid fa-qrcode" style="font-size:2rem;color:#2563eb;margin-bottom:0.75rem;"></i>
@@ -194,7 +169,7 @@ HTML
       </div>
     </div>
 
-    <div class="pg-panel">
+    <div class="pg-panel" id="manual-panel">
       <p class="pg-section-title" style="margin-bottom:0.55rem;">Or type ticket ID</p>
       <div class="pg-manual-row">
         <input type="text" id="manual-ticket-id" class="pg-input" placeholder="Ticket ID" autocomplete="off" enterkeyhint="go">
@@ -243,212 +218,257 @@ HTML
         </div>
       </div>
     </details>
+    </div>
+
+    <div id="panel-status" class="hidden">
+      <div class="pg-panel pg-status-lookup">
+        <p class="pg-section-title" style="margin:0 0 0.35rem;">Check ticket status</p>
+        <p class="pg-faint" style="margin:0 0 0.75rem;font-size:0.75rem;">Read-only lookup — does not redeem benefits or record a scan.</p>
+        <div class="pg-manual-row">
+          <input type="text" id="status-ticket-id" class="pg-input" placeholder="Ticket ID" autocomplete="off" enterkeyhint="search">
+          <button type="button" onclick="lookupTicketStatus()" class="pg-btn pg-btn--process">Look up</button>
+        </div>
+        <div id="status-error" class="pg-alert hidden" style="margin-top:0.85rem;"></div>
+        <div id="status-result" class="pg-status-card hidden" style="margin-top:0.85rem;"></div>
+      </div>
+    </div>
   </main>
 
   <footer class="pg-footer">
     <div style="display:flex;align-items:center;gap:0.5rem;">
       <span class="pg-live-dot"></span>
-      <span id="footer-status-label">Sign in to begin</span>
+      <span id="footer-status-label">Ready to scan</span>
     </div>
+    <a href="staff_login.php" class="pg-footer-link">Switch staff</a>
     <a href="index.php" class="pg-footer-link">Home</a>
-    <a href="validate.php" class="pg-footer-link">Check ticket status</a>
   </footer>
 
 
   <script>
-    let activeStationType = null;
+    let activeStationType = <?php echo json_encode($stall_name); ?>;
     let html5QrcodeScanner = null;
-    let currentMode = 'stall';
-    let moreLoginOpen = false;
+    let terminalView = 'scan';
     let flashTimer = null;
     const BASE_URL = window.location.origin + window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/'));
-
-    const DEV_MAIL_MODE = <?php echo ($app_debug || !$smtp_configured) ? 'true' : 'false'; ?>;
-    const IS_AUTHENTICATED = <?php echo $is_authenticated ? 'true' : 'false'; ?>;
-    const IS_STALL_AUTHENTICATED = <?php echo $is_stall_authenticated ? 'true' : 'false'; ?>;
     const STALL_NAME = <?php echo json_encode($stall_name); ?>;
-    const PIN_UNLOCKED = <?php echo $pin_unlocked ? 'true' : 'false'; ?>;
-    const PIN_STATION = <?php echo json_encode($pin_station); ?>;
-    const STATION_PIN_ENABLED = <?php echo $station_pin_enabled ? 'true' : 'false'; ?>;
-    const AUTH_ROLE = <?php echo json_encode($auth_role); ?>;
+    const STALL_CATEGORY = <?php echo json_encode($stall_category); ?>;
+    const SHOW_WELCOME = <?php echo $show_welcome ? 'true' : 'false'; ?>;
+    let loadedTicketId = null;
+    let tierHasBenefits = false;
 
-    window.addEventListener('storage', (e) => {
-      if (e.key !== 'passgate_auth' || !e.newValue) return;
-      if (e.newValue === 'admin') {
-        window.location.replace('distributors.php');
-      } else if (e.newValue === 'distributor') {
-        document.getElementById('login-overlay')?.classList.add('hidden');
-        setReadyState(false, 'Signed in');
-      } else if (e.newValue === 'logout') {
-        window.location.replace('index.php');
-      } else if (e.newValue === 'stall') {
-        window.location.replace('terminal.php');
+    document.addEventListener('DOMContentLoaded', () => {
+      localStorage.setItem('passgate_auth', 'stall');
+      if (SHOW_WELCOME) {
+        showToast(`Welcome, ${STALL_NAME}`, 'success');
       }
     });
 
-    function setReadyState(ready, stationLabel) {
-      const title = document.getElementById('header-station-title');
-      const chip = document.getElementById('header-status-chip');
-      const footer = document.getElementById('footer-status-label');
-      if (ready) {
-        title.textContent = stationLabel;
-        chip.textContent = 'Ready';
-        chip.className = 'pg-status-chip is-ready';
-        footer.textContent = 'Ready to scan';
+    function switchTerminalMode(mode) {
+      terminalView = mode;
+      document.getElementById('tab-scan')?.classList.toggle('is-active', mode === 'scan');
+      document.getElementById('tab-status')?.classList.toggle('is-active', mode === 'status');
+      document.getElementById('panel-scan')?.classList.toggle('hidden', mode !== 'scan');
+      document.getElementById('panel-status')?.classList.toggle('hidden', mode !== 'status');
+      if (mode === 'status') {
+        stopCameraEngineImmediate();
+      }
+    }
+
+    function getSelectedBenefit() {
+      const el = document.getElementById('scan-benefit-select');
+      return el ? el.value.trim() : '';
+    }
+
+    function normalizeTicketId(ticketId) {
+      let cleanedId = ticketId.trim();
+      if (/^\d+$/.test(cleanedId)) cleanedId = cleanedId.padStart(6, '0');
+      return cleanedId;
+    }
+
+    function setBenefitPanelEnabled(enabled) {
+      document.getElementById('benefit-select-panel')?.classList.toggle('is-disabled', !enabled);
+      const sel = document.getElementById('scan-benefit-select');
+      if (sel) sel.disabled = !enabled;
+    }
+
+    function setScanControlsEnabled(enabled) {
+      document.getElementById('scanner-panel')?.classList.toggle('pg-benefit-panel', !enabled);
+      document.getElementById('scanner-panel')?.classList.toggle('is-disabled', !enabled);
+      document.getElementById('manual-panel')?.classList.toggle('pg-benefit-panel', !enabled);
+      document.getElementById('manual-panel')?.classList.toggle('is-disabled', !enabled);
+      const cameraBtn = document.getElementById('camera-trigger-btn');
+      if (cameraBtn) cameraBtn.disabled = !enabled;
+      const manualInput = document.getElementById('manual-ticket-id');
+      const manualBtn = document.querySelector('#manual-panel .pg-btn--process');
+      if (manualInput) manualInput.disabled = !enabled;
+      if (manualBtn) manualBtn.disabled = !enabled;
+    }
+
+    function clearBenefitDropdown() {
+      const sel = document.getElementById('scan-benefit-select');
+      if (!sel) return;
+      sel.innerHTML = '<option value="">Select benefit…</option>';
+      sel.value = '';
+      sel.disabled = true;
+      loadedTicketId = null;
+      tierHasBenefits = false;
+      document.getElementById('benefit-tier-meta')?.classList.add('hidden');
+      document.getElementById('no-benefits-msg')?.classList.add('hidden');
+      setBenefitPanelEnabled(false);
+    }
+
+    function populateBenefitDropdown(benefits, meta) {
+      const sel = document.getElementById('scan-benefit-select');
+      const msg = document.getElementById('no-benefits-msg');
+      const metaEl = document.getElementById('benefit-tier-meta');
+      if (!sel) return;
+
+      sel.innerHTML = '<option value="">Select benefit…</option>';
+      benefits.forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = b.name;
+        opt.textContent = b.name;
+        opt.dataset.benefitId = String(b.id);
+        sel.appendChild(opt);
+      });
+      sel.disabled = false;
+      tierHasBenefits = benefits.length > 0;
+      setBenefitPanelEnabled(tierHasBenefits);
+
+      if (metaEl && meta) {
+        const parts = [meta.event_name, meta.tier_name].filter(Boolean);
+        metaEl.textContent = parts.join(' · ');
+        metaEl.classList.toggle('hidden', parts.length === 0);
+      }
+
+      if (msg) {
+        msg.classList.add('hidden');
+        msg.textContent = '';
+      }
+
+      preselectBenefitMatch(STALL_NAME);
+    }
+
+    function showNoBenefitsMessage(message, disableScanning = true) {
+      const msg = document.getElementById('no-benefits-msg');
+      const metaEl = document.getElementById('benefit-tier-meta');
+      clearBenefitDropdown();
+      tierHasBenefits = false;
+      if (disableScanning) {
+        setScanControlsEnabled(false);
       } else {
-        title.textContent = stationLabel || 'Terminal locked';
-        chip.textContent = 'Locked';
-        chip.className = 'pg-status-chip is-locked';
-        footer.textContent = stationLabel === 'Signed in' ? 'Signed in' : 'Sign in to begin';
+        setScanControlsEnabled(true);
+      }
+      if (msg) {
+        msg.textContent = message;
+        msg.classList.remove('hidden');
+      }
+      if (metaEl) metaEl.classList.add('hidden');
+      document.getElementById('benefit-select-panel')?.classList.remove('is-disabled');
+    }
+
+    async function fetchBenefitsForTicket(ticketId) {
+      const cleanedId = normalizeTicketId(ticketId);
+      let url = `${BASE_URL}/api.php?action=get_benefits&ticket_id=${encodeURIComponent(cleanedId)}`;
+      if (STALL_CATEGORY) {
+        url += `&stall_category=${encodeURIComponent(STALL_CATEGORY)}`;
+      }
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok || data.status !== 'success') {
+        throw new Error(data.message || 'Ticket not found');
+      }
+      return { cleanedId, payload: data.data };
+    }
+
+    async function prepareTicketScan(ticketId) {
+      const cleanedId = normalizeTicketId(ticketId);
+      if (loadedTicketId === cleanedId && tierHasBenefits) {
+        setScanControlsEnabled(true);
+        return true;
+      }
+
+      setScanControlsEnabled(true);
+      clearBenefitDropdown();
+      loadedTicketId = cleanedId;
+
+      try {
+        const { payload } = await fetchBenefitsForTicket(cleanedId);
+        const benefits = payload.benefits || [];
+
+        if (benefits.length === 0) {
+          const msg = STALL_CATEGORY
+            ? 'No benefits available for your stall for this ticket.'
+            : 'No benefits available for this ticket\'s tier.';
+          showNoBenefitsMessage(msg);
+          showToast(msg, 'error');
+          return false;
+        }
+
+        populateBenefitDropdown(benefits, payload);
+        document.getElementById('benefit-panel-hint').textContent = 'Choose the benefit to redeem for this ticket.';
+        return true;
+      } catch (err) {
+        loadedTicketId = null;
+        showNoBenefitsMessage(err.message || 'Ticket not found.', false);
+        showToast(err.message || 'Ticket not found', 'error');
+        return false;
       }
     }
 
-    function activateTerminal(stationLabel) {
-      activeStationType = stationLabel;
-      document.getElementById('login-overlay').classList.add('hidden');
-      setReadyState(true, stationLabel);
-      startCameraScanningEngine();
+    function requireBenefitSelected() {
+      if (!tierHasBenefits) {
+        showToast('Load a ticket first to see available benefits', 'error');
+        return false;
+      }
+      const benefit = getSelectedBenefit();
+      if (!benefit) {
+        showToast('Select a benefit before scanning', 'error');
+        document.getElementById('scan-benefit-select')?.focus();
+        return false;
+      }
+      return true;
     }
 
-    if (IS_STALL_AUTHENTICATED && STALL_NAME) {
-      document.addEventListener('DOMContentLoaded', () => {
-        localStorage.setItem('passgate_auth', 'stall');
-        activateTerminal(STALL_NAME);
-      });
-    } else if (PIN_UNLOCKED && PIN_STATION) {
-      document.addEventListener('DOMContentLoaded', () => {
-        activateTerminal(PIN_STATION);
-      });
-    } else if (IS_AUTHENTICATED && AUTH_ROLE === 'distributor') {
-      document.addEventListener('DOMContentLoaded', () => {
-        localStorage.setItem('passgate_auth', 'distributor');
-        document.getElementById('login-overlay')?.classList.add('hidden');
-        setReadyState(false, 'Signed in');
-      });
+    function preselectBenefitMatch(label) {
+      const sel = document.getElementById('scan-benefit-select');
+      if (!sel || !label) return false;
+      const norm = label.trim().toLowerCase();
+      for (const opt of sel.options) {
+        if (opt.value && opt.value.toLowerCase() === norm) {
+          sel.value = opt.value;
+          return true;
+        }
+      }
+      return false;
     }
 
-    function toggleMoreLogin() {
-      moreLoginOpen = !moreLoginOpen;
-      document.getElementById('more-login-panel')?.classList.toggle('hidden', !moreLoginOpen);
-      document.getElementById('more-login-toggle').textContent = moreLoginOpen
-        ? 'Hide options'
-        : 'More options (Admin / PIN)';
-      if (!moreLoginOpen) setLoginMode('stall');
-    }
+    async function onTicketCaptured(ticketId) {
+      if (!ticketId.trim()) return;
+      const ready = await prepareTicketScan(ticketId);
+      if (!ready) return;
 
-    function setLoginMode(mode) {
-      currentMode = mode;
-      document.getElementById('fields-stall')?.classList.toggle('hidden', mode !== 'stall');
-      document.getElementById('fields-station')?.classList.toggle('hidden', mode !== 'station');
-      document.getElementById('fields-distributor')?.classList.toggle('hidden', mode !== 'distributor');
-      document.getElementById('login-link-sent')?.classList.add('hidden');
-
-      const labels = {
-        stall: 'Start scanning',
-        distributor: 'Send login link',
-        station: 'Unlock with PIN'
-      };
-      document.getElementById('auth-btn').innerText = labels[mode] || 'Start scanning';
-
-      ['stall', 'distributor', 'station'].forEach((m) => {
-        const btn = document.getElementById('btn-mode-' + m);
-        if (!btn) return;
-        btn.classList.toggle('is-active', mode === m);
-      });
-    }
-
-    function handleAuth() {
-      if (currentMode === 'stall') handleStallLogin();
-      else if (currentMode === 'station') handleStationAuthentication();
-      else handleDistributorLogin();
-    }
-
-    async function handleStallLogin() {
-      const email = document.getElementById('login-stall-email').value.trim();
-      const password = document.getElementById('login-stall-password').value;
-      if (!email || !password) {
-        showToast('Enter email and password', 'error');
+      if (getSelectedBenefit()) {
+        executeScanTransaction(normalizeTicketId(ticketId));
         return;
       }
-      try {
-        const response = await fetch(`${BASE_URL}/auth.php?action=stall_login`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'stall_login', email, password })
-        });
-        const result = await response.json();
-        if (result.status === 'success') {
-          localStorage.setItem('passgate_auth', 'stall');
-          activateTerminal(result.stall_name);
-          showToast(`${result.stall_name} ready`, 'success');
-        } else {
-          showToast(result.message || 'Invalid email or password', 'error');
-        }
-      } catch (err) {
-        showToast('Sign-in failed', 'error');
-      }
+
+      showToast('Select a benefit to redeem', 'warn');
+      document.getElementById('scan-benefit-select')?.focus();
     }
 
-    async function handleStationAuthentication() {
-      const selectedStation = document.getElementById('login-station-select').value;
-      const inputPin = document.getElementById('login-pin').value.trim();
-      if (!selectedStation) {
-        showToast('No station configured', 'error');
-        return;
-      }
-      try {
-        const response = await fetch(`${BASE_URL}/auth.php?action=unlock_station`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'unlock_station', station: selectedStation, pin: inputPin })
-        });
-        const result = await response.json();
-        if (result.status === 'success') {
-          activateTerminal(selectedStation);
-          showToast(`${selectedStation} unlocked`, 'success');
-        } else {
-          showToast(result.message || 'Invalid PIN', 'error');
-        }
-      } catch (err) {
-        showToast('Sign-in failed', 'error');
-      }
-    }
-
-    async function handleDistributorLogin() {
-      const emailInput = document.getElementById('login-email').value.trim();
-      if (!emailInput) {
-        showToast('Enter your email', 'error');
-        return;
-      }
-      try {
-        const response = await fetch(`${BASE_URL}/auth.php?action=request_login`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'request_login', email: emailInput })
-        });
-        const result = await response.json();
-        if (result.status === 'success') {
-          document.getElementById('login-link-sent').classList.remove('hidden');
-          showToast(DEV_MAIL_MODE ? 'Link saved to dev_login.log' : 'Login link sent — check email', 'success');
-        } else {
-          showToast(result.message || 'Failed', 'error');
-        }
-      } catch (err) {
-        showToast('Could not send login link', 'error');
-      }
-    }
-
-    document.getElementById('login-pin')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleStationAuthentication(); });
-    document.getElementById('login-stall-password')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleStallLogin(); });
-    document.getElementById('login-stall-email')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleStallLogin(); });
     document.getElementById('manual-ticket-id').addEventListener('keypress', (e) => { if (e.key === 'Enter') processManualScan(); });
-    document.getElementById('login-email')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleAuth(); });
+    document.getElementById('status-ticket-id')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') lookupTicketStatus(); });
+    document.getElementById('scan-benefit-select')?.addEventListener('change', () => {
+      if (!loadedTicketId || !getSelectedBenefit()) return;
+      executeScanTransaction(loadedTicketId);
+    });
 
     function stopCameraEngineImmediate() {
       if (html5QrcodeScanner && html5QrcodeScanner.isScanning) {
         html5QrcodeScanner.stop().then(() => {
           document.getElementById('video-placeholder').classList.remove('hidden');
-          document.getElementById('camera-trigger-btn').innerText = 'Scan next';
+          document.getElementById('camera-trigger-btn').innerText = 'Start camera';
         }).catch(() => {});
       }
     }
@@ -464,13 +484,9 @@ HTML
           body: JSON.stringify({ action: 'lock_terminal' })
         });
       } catch (err) {}
-      setReadyState(false);
-      document.getElementById('scan-result-card').className = 'pg-result hidden';
-      document.getElementById('benefits-details')?.classList.add('hidden');
-      document.getElementById('audit-details')?.classList.add('hidden');
-      document.getElementById('audit-stall-row').classList.add('hidden');
-      document.getElementById('login-overlay').classList.remove('hidden');
       localStorage.removeItem('passgate_auth');
+      showToast('Logged out', 'success');
+      window.location.replace(`${BASE_URL}/staff_login.php?logged_out=1`);
     }
 
     function loadHtml5QrcodeLibrary() {
@@ -487,8 +503,8 @@ HTML
 
     async function startCameraScanningEngine() {
       if (!activeStationType) {
-        showToast('Sign in as a stall first', 'error');
-        document.getElementById('login-overlay')?.classList.remove('hidden');
+        showToast('Session expired — log in again', 'error');
+        window.location.replace(`${BASE_URL}/staff_login.php?next=terminal.php`);
         return;
       }
       try {
@@ -508,12 +524,76 @@ HTML
       html5QrcodeScanner.start(
         { facingMode: 'environment' },
         config,
-        (decodedText) => { stopCameraEngineImmediate(); executeScanTransaction(decodedText); },
+        (decodedText) => { stopCameraEngineImmediate(); onTicketCaptured(decodedText); },
         () => {}
       ).catch(() => {
         showToast('Camera blocked — use ticket ID below', 'error');
         document.getElementById('video-placeholder').classList.remove('hidden');
       });
+    }
+
+    async function lookupTicketStatus() {
+      const input = document.getElementById('status-ticket-id');
+      const errEl = document.getElementById('status-error');
+      const resultEl = document.getElementById('status-result');
+      let ticketId = input.value.trim();
+      if (!ticketId) return;
+
+      errEl.classList.add('hidden');
+      resultEl.classList.add('hidden');
+      resultEl.innerHTML = '<p class="pg-muted">Looking up…</p>';
+      resultEl.classList.remove('hidden');
+
+      if (/^\d+$/.test(ticketId)) ticketId = ticketId.padStart(6, '0');
+
+      try {
+        const res = await fetch(`${BASE_URL}/api.php?action=ticket_status&id=${encodeURIComponent(ticketId)}`);
+        const data = await res.json();
+        if (!res.ok || data.status !== 'success') {
+          throw new Error(data.message || 'Ticket not found');
+        }
+        renderStatusResult(data.data);
+      } catch (err) {
+        resultEl.classList.add('hidden');
+        errEl.textContent = err.message || 'Lookup failed';
+        errEl.classList.remove('hidden');
+      }
+    }
+
+    function renderStatusResult(d) {
+      const resultEl = document.getElementById('status-result');
+      const holderSub = d.holder_detail && d.holder_detail !== d.holder_label
+        ? `<span class="pg-faint" style="display:block;font-size:0.72rem;margin-top:0.15rem;">${escapeHtml(d.holder_detail)}</span>`
+        : '';
+      const benefitsHtml = (d.benefits || []).map(b => {
+        const full = b.used >= b.max;
+        const pct = b.max > 0 ? Math.min(100, Math.round((b.used / b.max) * 100)) : 0;
+        const last = b.last_scan ? `<span class="pg-faint" style="display:block;font-size:0.65rem;margin-top:0.2rem;">Last: ${escapeHtml(String(b.last_scan).slice(0, 16))}</span>` : '';
+        return `<div class="pg-benefit${full ? ' is-full' : ''}">
+          <div style="display:flex;justify-content:space-between;gap:0.5rem;">
+            <span style="font-weight:600;">${escapeHtml(b.name)}</span>
+            <span class="pg-mono" style="font-size:0.72rem;font-weight:700;">${b.used}/${b.max}</span>
+          </div>
+          <div class="pg-bar"><div class="pg-bar__fill${full ? ' is-full' : ''}" style="width:${pct}%"></div></div>
+          ${last}
+        </div>`;
+      }).join('');
+
+      resultEl.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.75rem;margin-bottom:0.85rem;">
+          <span class="pg-mono" style="font-weight:700;word-break:break-all;">${escapeHtml(d.ticket_id)}</span>
+          <span class="pg-status-chip ${d.status === 'Active' ? 'is-ready' : 'is-locked'}">${escapeHtml(d.status)}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.65rem;font-size:0.82rem;margin-bottom:0.85rem;">
+          <div><span class="pg-section-title" style="display:block;margin-bottom:0.15rem;">Event</span><strong>${escapeHtml(d.event)}</strong></div>
+          <div><span class="pg-section-title" style="display:block;margin-bottom:0.15rem;">Tier</span><strong>${escapeHtml(d.tier)}</strong></div>
+          <div><span class="pg-section-title" style="display:block;margin-bottom:0.15rem;">Physical #</span><strong>#${d.physical_number}</strong></div>
+          <div><span class="pg-section-title" style="display:block;margin-bottom:0.15rem;">Assigned to</span><strong>${escapeHtml(d.holder_label)}</strong>${holderSub}</div>
+        </div>
+        <h4 class="pg-section-title" style="margin:0 0 0.45rem;">Benefits</h4>
+        <div style="display:grid;gap:0.45rem;">${benefitsHtml || '<p class="pg-muted" style="margin:0;">No benefits on this tier.</p>'}</div>
+      `;
+      resultEl.classList.remove('hidden');
     }
 
     function showFlash(kind, title, sub, ticketId) {
@@ -540,10 +620,13 @@ HTML
 
     function executeScanTransaction(ticketId) {
       if (!activeStationType) {
-        showToast('Sign in as a stall first', 'error');
-        document.getElementById('login-overlay')?.classList.remove('hidden');
+        showToast('Session expired — log in again', 'error');
+        window.location.replace(`${BASE_URL}/staff_login.php?next=terminal.php`);
         return;
       }
+      if (!requireBenefitSelected()) return;
+
+      const selectedBenefit = getSelectedBenefit();
       let cleanedId = ticketId.trim();
       if (/^\d+$/.test(cleanedId)) cleanedId = cleanedId.padStart(6, '0');
 
@@ -560,7 +643,7 @@ HTML
       fetch(`${BASE_URL}/api.php?action=scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticket_id: cleanedId, station: activeStationType })
+        body: JSON.stringify({ ticket_id: cleanedId, station: selectedBenefit })
       })
       .then(async response => {
         const data = await response.json();
@@ -578,7 +661,7 @@ HTML
             : '<i class="fa-solid fa-circle-minus mr-1.5"></i> Limit reached';
           body.innerText = isGranted ? 'Ticket verified.' : 'This benefit cannot be used again.';
           auditDetails.classList.remove('hidden');
-          populateAuditDossier(data.ticket, activeStationType);
+          populateAuditDossier(data.ticket, selectedBenefit);
           if (data.stall_name) {
             document.getElementById('audit-stall-row').classList.remove('hidden');
             document.getElementById('audit-stall').innerText = data.stall_name;
@@ -586,6 +669,7 @@ HTML
             document.getElementById('audit-stall-row').classList.add('hidden');
           }
           renderBenefitsUsagePanel(data);
+          resetScanFormForNextGuest();
         } else {
           throw new Error(data.message || 'An error occurred');
         }
@@ -601,6 +685,13 @@ HTML
         document.getElementById('audit-dist').innerText = 'N/A';
         document.getElementById('audit-logs-box').innerHTML = '<div class="pg-faint" style="font-style:italic;padding:0.4rem;">No matching ticket.</div>';
       });
+    }
+
+    function resetScanFormForNextGuest() {
+      document.getElementById('manual-ticket-id').value = '';
+      document.getElementById('benefit-panel-hint').textContent = 'Scan or enter a ticket ID to load benefits for that tier.';
+      clearBenefitDropdown();
+      setScanControlsEnabled(true);
     }
 
     function renderBenefitsUsagePanel(data) {
@@ -659,9 +750,12 @@ HTML
       const msgEl = document.getElementById('toast-message');
       const iconWrap = document.getElementById('toast-icon-wrapper');
       const isSuccess = type === 'success';
+      const isWarn = type === 'warn';
       msgEl.innerText = msg;
       iconWrap.className = `pg-toast__icon ${isSuccess ? 'pg-toast__icon--ok' : 'pg-toast__icon--err'}`;
-      iconWrap.innerHTML = isSuccess ? '<i class="fa-solid fa-check"></i>' : '<i class="fa-solid fa-exclamation"></i>';
+      iconWrap.innerHTML = isSuccess
+        ? '<i class="fa-solid fa-check"></i>'
+        : (isWarn ? '<i class="fa-solid fa-circle-exclamation"></i>' : '<i class="fa-solid fa-exclamation"></i>');
       box.classList.remove('hidden');
       requestAnimationFrame(() => box.classList.add('is-visible'));
       setTimeout(() => {
@@ -670,11 +764,13 @@ HTML
       }, 3500);
     }
 
-    function processManualScan() {
+    async function processManualScan() {
       const el = document.getElementById('manual-ticket-id');
       if (!el.value.trim()) return;
-      executeScanTransaction(el.value.trim());
-      el.value = '';
+      await onTicketCaptured(el.value.trim());
+      if (loadedTicketId && getSelectedBenefit()) {
+        el.value = '';
+      }
     }
   </script>
 </body>

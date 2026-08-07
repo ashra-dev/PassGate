@@ -167,11 +167,13 @@ function getTicketDetails(PDO $db, string $ticketId): ?array
 
     $stmt = $db->prepare(
         'SELECT t.*, ti.name AS tier_name, ti.price AS tier_price,
-                e.name AS event_name, d.name AS distributor_company, d.email AS distributor_email
+                e.name AS event_name, d.name AS distributor_company, d.email AS distributor_email,
+                c.email AS customer_email, c.name AS customer_name
          FROM tickets t
          JOIN tiers ti ON ti.id = t.tier_id
          JOIN events e ON e.id = t.event_id
          LEFT JOIN distributors d ON d.id = t.allocated_distributor_id
+         LEFT JOIN customers c ON c.id = t.customer_id
          WHERE t.id = :id'
     );
     $stmt->execute(['id' => $ticketId]);
@@ -211,6 +213,291 @@ function getTicketDetails(PDO $db, string $ticketId): ?array
         'ticket'   => $ticket,
         'benefits' => $benefits,
         'scans'    => $scans,
+    ];
+}
+
+/**
+ * Read-only ticket status payload for staff terminal / API (does not record scans).
+ *
+ * @return array<string, mixed>|null
+ */
+function buildTicketStatusPayload(PDO $db, string $ticketId): ?array
+{
+    $details = getTicketDetails($db, $ticketId);
+    if ($details === null) {
+        return null;
+    }
+
+    $ticket = $details['ticket'];
+    $benefits = $details['benefits'];
+
+    $totalMax = array_sum(array_column($benefits, 'max_uses'));
+    $totalUsed = array_sum(array_column($benefits, 'used'));
+    $isFullyUsed = $totalMax > 0 && $totalUsed >= $totalMax;
+    $displayStatus = $isFullyUsed ? 'Used' : ($ticket['status'] ?? 'Active');
+
+    if (!empty($ticket['customer_email'])) {
+        $holderType = 'customer';
+        $holderLabel = (string) ($ticket['customer_name'] ?: $ticket['customer_email']);
+        $holderDetail = (string) $ticket['customer_email'];
+    } elseif (!empty($ticket['allocated_distributor_name'])) {
+        $holderType = 'distributor';
+        $holderLabel = (string) $ticket['allocated_distributor_name'];
+        $holderDetail = (string) ($ticket['distributor_company'] ?? $holderLabel);
+    } elseif (!empty($ticket['distributor_company'])) {
+        $holderType = 'distributor';
+        $holderLabel = (string) $ticket['distributor_company'];
+        $holderDetail = (string) ($ticket['distributor_email'] ?? '');
+    } else {
+        $holderType = 'vault';
+        $holderLabel = 'Vault pool';
+        $holderDetail = '';
+    }
+
+    $benefitRows = [];
+    foreach ($benefits as $benefit) {
+        $used = (int) $benefit['used'];
+        $max = (int) $benefit['max_uses'];
+        $benefitRows[] = [
+            'name'      => trim((string) $benefit['name']),
+            'used'      => $used,
+            'max'       => $max,
+            'remaining' => max(0, $max - $used),
+            'last_scan' => $benefit['last_scan'] ?? null,
+        ];
+    }
+
+    return [
+        'ticket_id'       => (string) $ticket['id'],
+        'event'           => (string) ($ticket['event_name'] ?? ''),
+        'tier'            => (string) ($ticket['tier_name'] ?? ''),
+        'physical_number' => (int) ($ticket['physical_number'] ?? 0),
+        'status'          => $displayStatus,
+        'holder_type'     => $holderType,
+        'holder_label'    => $holderLabel,
+        'holder_detail'   => $holderDetail,
+        'benefits'        => $benefitRows,
+    ];
+}
+
+/**
+ * Distinct categories from benefits (for admin dropdowns). Falls back to "general".
+ *
+ * @return list<string>
+ */
+function getBenefitCategoryOptions(PDO $db): array
+{
+    ensureCategorySchema($db);
+
+    $rows = $db->query(
+        "SELECT DISTINCT LOWER(TRIM(category)) AS category
+         FROM benefits
+         WHERE TRIM(category) <> ''
+         ORDER BY category ASC"
+    )->fetchAll(PDO::FETCH_COLUMN);
+
+    $categories = array_values(array_filter(
+        $rows,
+        static fn ($cat): bool => $cat !== '' && $cat !== null
+    ));
+
+    return $categories !== [] ? $categories : ['general'];
+}
+
+/**
+ * Distinct benefit/stall categories already in use (for analytics / legacy callers).
+ *
+ * @return list<string>
+ */
+function getDistinctBenefitCategories(PDO $db): array
+{
+    ensureCategorySchema($db);
+
+    $rows = $db->query(
+        "SELECT DISTINCT LOWER(TRIM(category)) AS category
+         FROM (
+             SELECT category FROM benefits WHERE TRIM(category) <> ''
+             UNION
+             SELECT category FROM stalls WHERE TRIM(category) <> ''
+         ) AS categories
+         ORDER BY category ASC"
+    )->fetchAll(PDO::FETCH_COLUMN);
+
+    return array_values(array_filter($rows, static fn ($cat): bool => $cat !== '' && $cat !== null));
+}
+
+/**
+ * Resolve category from a dropdown + optional custom text field (Add new).
+ */
+function resolveCategorySelection(string $selected, string $customFallback = ''): string
+{
+    $selected = trim($selected);
+    if ($selected === '__new__') {
+        return normalizeBenefitCategory(trim($customFallback));
+    }
+
+    return normalizeBenefitCategory($selected);
+}
+
+/**
+ * Normalize a benefit/stall category slug (lowercase, trimmed).
+ *
+ * @throws InvalidArgumentException when required and empty, or format invalid
+ */
+function normalizeBenefitCategory(?string $category, bool $required = true): string
+{
+    $category = strtolower(trim((string) $category));
+    // Allow plain typing: spaces become hyphens, other invalid chars stripped
+    $category = preg_replace('/\s+/', '-', $category);
+    $category = preg_replace('/[^a-z0-9_-]/', '', $category);
+    $category = trim($category, '-_');
+
+    if ($category === '') {
+        if (!$required) {
+            return '';
+        }
+
+        throw new InvalidArgumentException('Category is required.');
+    }
+
+    if (strlen($category) > 50) {
+        throw new InvalidArgumentException('Category must be 50 characters or fewer.');
+    }
+
+    return $category;
+}
+
+/**
+ * Add category columns to benefits and stalls (safe to run multiple times).
+ */
+function ensureCategorySchema(PDO $db): void
+{
+    $benefitCol = $db->prepare(
+        "SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'benefits' AND column_name = 'category'"
+    );
+    $benefitCol->execute();
+    if ($benefitCol->fetch() === false) {
+        $db->exec("ALTER TABLE benefits ADD COLUMN category VARCHAR(50) NOT NULL DEFAULT 'general'");
+    }
+
+    $stallCol = $db->prepare(
+        "SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'stalls' AND column_name = 'category'"
+    );
+    $stallCol->execute();
+    if ($stallCol->fetch() === false) {
+        $db->exec("ALTER TABLE stalls ADD COLUMN category VARCHAR(50) NOT NULL DEFAULT 'general'");
+    }
+
+    // Backfill legacy empty categories
+    $db->exec("UPDATE benefits SET category = 'general' WHERE TRIM(category) = ''");
+    $db->exec("UPDATE stalls SET category = 'general' WHERE TRIM(category) = ''");
+    $db->exec("ALTER TABLE benefits ALTER COLUMN category SET DEFAULT 'general'");
+    $db->exec("ALTER TABLE stalls ALTER COLUMN category SET DEFAULT 'general'");
+
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_benefits_category ON benefits (category)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_stalls_category ON stalls (category)');
+}
+
+/**
+ * Scan counts grouped by benefit category for an event.
+ *
+ * @return list<array{category: string, scan_count: int}>
+ */
+function getScansByCategory(PDO $db, int $eventId): array
+{
+    ensureCategorySchema($db);
+
+    $stmt = $db->prepare(
+        "SELECT COALESCE(NULLIF(LOWER(TRIM(b.category)), ''), 'general') AS category,
+                COUNT(*) AS scan_count
+         FROM scans s
+         JOIN benefits b ON b.id = s.benefit_id
+         JOIN tickets t ON t.id = s.ticket_id
+         WHERE t.event_id = :event_id
+         GROUP BY COALESCE(NULLIF(LOWER(TRIM(b.category)), ''), 'general')
+         ORDER BY scan_count DESC, category ASC"
+    );
+    $stmt->execute(['event_id' => $eventId]);
+
+    return array_map(
+        static fn (array $row): array => [
+            'category'   => (string) $row['category'],
+            'scan_count' => (int) $row['scan_count'],
+        ],
+        $stmt->fetchAll()
+    );
+}
+
+/**
+ * Benefits configured for the tier of a ticket (terminal dropdown).
+ *
+ * @param string|null $stallCategory When set, only benefits in this category are returned.
+ * @return array<string, mixed>|null null when ticket not found
+ */
+function getBenefitsForTicket(PDO $db, string $ticketId, ?string $stallCategory = null): ?array
+{
+    ensureCategorySchema($db);
+
+    $ticketId = trim($ticketId);
+    if (preg_match('/^\d+$/', $ticketId)) {
+        $ticketId = str_pad($ticketId, 6, '0', STR_PAD_LEFT);
+    }
+
+    $stmt = $db->prepare(
+        'SELECT t.id AS ticket_id, t.tier_id, ti.name AS tier_name, e.name AS event_name
+         FROM tickets t
+         JOIN tiers ti ON ti.id = t.tier_id
+         JOIN events e ON e.id = t.event_id
+         WHERE t.id = :id'
+    );
+    $stmt->execute(['id' => $ticketId]);
+    $ticket = $stmt->fetch();
+
+    if (!$ticket) {
+        return null;
+    }
+
+    $stallCategory = $stallCategory !== null ? normalizeBenefitCategory($stallCategory, false) : null;
+
+    if ($stallCategory !== null && $stallCategory !== '') {
+        $benefitsStmt = $db->prepare(
+            'SELECT b.id, TRIM(b.name) AS name, LOWER(TRIM(b.category)) AS category
+             FROM benefits b
+             WHERE b.tier_id = :tier_id AND LOWER(TRIM(b.category)) = :category
+             ORDER BY b.id'
+        );
+        $benefitsStmt->execute([
+            'tier_id'  => (int) $ticket['tier_id'],
+            'category' => $stallCategory,
+        ]);
+    } else {
+        $benefitsStmt = $db->prepare(
+            'SELECT b.id, TRIM(b.name) AS name, LOWER(TRIM(b.category)) AS category
+             FROM benefits b
+             WHERE b.tier_id = :tier_id
+             ORDER BY b.id'
+        );
+        $benefitsStmt->execute(['tier_id' => (int) $ticket['tier_id']]);
+    }
+
+    $benefits = $benefitsStmt->fetchAll();
+
+    return [
+        'ticket_id'      => (string) $ticket['ticket_id'],
+        'tier_id'        => (int) $ticket['tier_id'],
+        'tier_name'      => (string) $ticket['tier_name'],
+        'event_name'     => (string) $ticket['event_name'],
+        'stall_category' => $stallCategory ?? '',
+        'benefits'       => array_map(
+            static fn (array $row): array => [
+                'id'       => (int) $row['id'],
+                'name'     => (string) $row['name'],
+                'category' => (string) ($row['category'] ?? ''),
+            ],
+            $benefits
+        ),
     ];
 }
 
@@ -448,7 +735,7 @@ function createEventWithTiers(PDO $db, string $eventName, array $tiers): int
         'INSERT INTO tiers (event_id, name, price, quantity) VALUES (:event_id, :name, :price, :quantity) RETURNING id'
     );
     $benefitInsert = $db->prepare(
-        'INSERT INTO benefits (tier_id, name, max_uses) VALUES (:tier_id, :name, :max_uses)'
+        'INSERT INTO benefits (tier_id, name, max_uses, category) VALUES (:tier_id, :name, :max_uses, :category)'
     );
     $ticketInsert = $db->prepare(
         'INSERT INTO tickets (id, physical_number, event_id, tier_id, status, allocated_distributor_name)
@@ -469,6 +756,7 @@ function createEventWithTiers(PDO $db, string $eventName, array $tiers): int
                 'tier_id'  => $tierId,
                 'name'     => $benefit['name'],
                 'max_uses' => max(1, $benefit['max']),
+                'category' => normalizeBenefitCategory($benefit['category'] ?? ''),
             ]);
         }
 
@@ -597,12 +885,11 @@ function completeMagicLinkLogin(PDO $db, string $email, string $token): array
     $record = $stmt->fetch();
 
     if ($record) {
-        session_regenerate_id(true);
-
-        $_SESSION['distributor_authenticated'] = true;
-        $_SESSION['distributor_email'] = $record['email'];
-        $_SESSION['distributor_role'] = $record['role'];
-        $_SESSION['distributor_id'] = $record['id'];
+        establishDistributorSession([
+            'id'    => $record['id'],
+            'email' => $record['email'],
+            'role'  => $record['role'],
+        ]);
 
         $delete = $db->prepare('DELETE FROM login_tokens WHERE id = :id');
         $delete->execute(['id' => $record['token_id']]);
@@ -612,7 +899,7 @@ function completeMagicLinkLogin(PDO $db, string $email, string $token): array
         return [
             'success'  => true,
             'error'    => null,
-            'redirect' => $record['role'] === 'admin' ? 'distributors.php' : 'terminal.php',
+            'redirect' => distributorLoginRedirectPath($record['role']),
         ];
     }
 
@@ -656,6 +943,284 @@ function isDistributorAuthenticated(): bool
 }
 
 /**
+ * Apply distributors.password_hash for existing databases.
+ */
+function ensureDistributorsSchema(PDO $db): void
+{
+    $colCheck = $db->prepare(
+        "SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'distributors'
+           AND column_name = 'password_hash'"
+    );
+    $colCheck->execute();
+
+    if ($colCheck->fetchColumn() === false) {
+        $db->exec(
+            "ALTER TABLE distributors ADD COLUMN password_hash VARCHAR(255) NOT NULL DEFAULT ''"
+        );
+    }
+}
+
+/**
+ * @return array<string, mixed>|null
+ */
+function getDistributorByEmail(PDO $db, string $email): ?array
+{
+    ensureDistributorsSchema($db);
+    $stmt = $db->prepare('SELECT * FROM distributors WHERE LOWER(email) = :email');
+    $stmt->execute(['email' => strtolower(trim($email))]);
+    $row = $stmt->fetch();
+
+    return $row ?: null;
+}
+
+/**
+ * Establish a distributor/admin session after successful authentication.
+ *
+ * @param array<string, mixed> $distributor
+ */
+function establishDistributorSession(array $distributor): void
+{
+    session_regenerate_id(true);
+    clearCustomerSession();
+    clearTerminalSession();
+
+    $_SESSION['distributor_authenticated'] = true;
+    $_SESSION['distributor_email'] = (string) $distributor['email'];
+    $_SESSION['distributor_role'] = (string) ($distributor['role'] ?? 'distributor');
+    $_SESSION['distributor_id'] = (string) $distributor['id'];
+}
+
+/**
+ * Authenticate a distributor by email/password. Returns distributor row or null.
+ *
+ * @return array<string, mixed>|null
+ */
+function authenticateDistributor(PDO $db, string $email, string $password): ?array
+{
+    $email = strtolower(trim($email));
+    if ($email === '' || $password === '') {
+        return null;
+    }
+
+    $distributor = getDistributorByEmail($db, $email);
+    if ($distributor === null) {
+        return null;
+    }
+
+    $hash = (string) ($distributor['password_hash'] ?? '');
+    if ($hash === '' || !password_verify($password, $hash)) {
+        return null;
+    }
+
+    return $distributor;
+}
+
+/**
+ * Create a distributor account with an admin-set password.
+ *
+ * @throws InvalidArgumentException
+ */
+function createDistributor(
+    PDO $db,
+    string $name,
+    string $email,
+    string $password,
+    string $role = 'distributor'
+): string
+{
+    ensureDistributorsSchema($db);
+
+    $name = trim($name);
+    $email = strtolower(trim($email));
+    $role = trim($role) !== '' ? trim($role) : 'distributor';
+
+    if ($name === '' || $email === '' || $password === '') {
+        throw new InvalidArgumentException('Company name, email, and password are required.');
+    }
+
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        throw new InvalidArgumentException('Invalid email address.');
+    }
+
+    if (strlen($password) < 6) {
+        throw new InvalidArgumentException('Password must be at least 6 characters.');
+    }
+
+    if (!in_array($role, ['distributor', 'admin'], true)) {
+        throw new InvalidArgumentException('Invalid role.');
+    }
+
+    if (getDistributorByEmail($db, $email) !== null) {
+        throw new InvalidArgumentException('A distributor with this email already exists.');
+    }
+
+    $id = 'DIST-' . random_int(1000, 9999);
+    $stmt = $db->prepare(
+        'INSERT INTO distributors (id, name, email, role, password_hash)
+         VALUES (:id, :name, :email, :role, :password_hash)'
+    );
+    $stmt->execute([
+        'id'            => $id,
+        'name'          => $name,
+        'email'         => $email,
+        'role'          => $role,
+        'password_hash' => password_hash($password, PASSWORD_DEFAULT),
+    ]);
+
+    return $id;
+}
+
+/**
+ * Update a distributor password hash (admin reset).
+ *
+ * @throws InvalidArgumentException
+ */
+function resetDistributorPassword(PDO $db, string $distributorId, string $password): void
+{
+    if ($password === '') {
+        throw new InvalidArgumentException('Password is required.');
+    }
+
+    if (strlen($password) < 6) {
+        throw new InvalidArgumentException('Password must be at least 6 characters.');
+    }
+
+    ensureDistributorsSchema($db);
+
+    $stmt = $db->prepare('SELECT id FROM distributors WHERE id = :id');
+    $stmt->execute(['id' => $distributorId]);
+    if ($stmt->fetchColumn() === false) {
+        throw new InvalidArgumentException('Distributor not found.');
+    }
+
+    $update = $db->prepare('UPDATE distributors SET password_hash = :hash WHERE id = :id');
+    $update->execute([
+        'hash' => password_hash($password, PASSWORD_DEFAULT),
+        'id'   => $distributorId,
+    ]);
+}
+
+/**
+ * Require an authenticated non-admin distributor session.
+ *
+ * @return array<string, mixed>
+ */
+function requireDistributorAuth(PDO $db): array
+{
+    if (!isDistributorAuthenticated()) {
+        safeRedirect('distributor_login.php?next=' . urlencode(passgateCurrentPath()));
+    }
+
+    $role = (string) ($_SESSION['distributor_role'] ?? '');
+    if ($role === 'admin') {
+        safeRedirect('distributors.php');
+    }
+
+    $distributorId = (string) ($_SESSION['distributor_id'] ?? '');
+    $stmt = $db->prepare('SELECT * FROM distributors WHERE id = :id');
+    $stmt->execute(['id' => $distributorId]);
+    $distributor = $stmt->fetch();
+
+    if (!$distributor) {
+        clearDistributorSession();
+        safeRedirect('distributor_login.php');
+    }
+
+    return $distributor;
+}
+
+/**
+ * Events where this distributor holds allocated tickets.
+ *
+ * @return array<int, array<string, mixed>>
+ */
+function getDistributorEvents(PDO $db, string $distributorId): array
+{
+    $stmt = $db->prepare(
+        'SELECT e.id, e.name, COUNT(t.id) AS ticket_count
+         FROM events e
+         JOIN tickets t ON t.event_id = e.id
+         WHERE t.allocated_distributor_id = :distributor_id
+         GROUP BY e.id, e.name
+         ORDER BY e.name'
+    );
+    $stmt->execute(['distributor_id' => $distributorId]);
+
+    return $stmt->fetchAll();
+}
+
+/**
+ * Summary stats for a distributor within one event.
+ *
+ * @return array{total: int, active: int, sold_online: int, scans_used: int}
+ */
+function getDistributorEventSummary(PDO $db, string $distributorId, int $eventId): array
+{
+    $ticketStmt = $db->prepare(
+        'SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE customer_id IS NULL AND status = \'Active\') AS active,
+            COUNT(*) FILTER (WHERE customer_id IS NOT NULL) AS sold_online
+         FROM tickets
+         WHERE allocated_distributor_id = :distributor_id AND event_id = :event_id'
+    );
+    $ticketStmt->execute(['distributor_id' => $distributorId, 'event_id' => $eventId]);
+    $ticketRow = $ticketStmt->fetch() ?: [];
+
+    $scanStmt = $db->prepare(
+        'SELECT COUNT(s.id) AS scans_used
+         FROM scans s
+         JOIN tickets t ON t.id = s.ticket_id
+         WHERE t.allocated_distributor_id = :distributor_id AND t.event_id = :event_id'
+    );
+    $scanStmt->execute(['distributor_id' => $distributorId, 'event_id' => $eventId]);
+    $scansUsed = (int) ($scanStmt->fetchColumn() ?: 0);
+
+    return [
+        'total'        => (int) ($ticketRow['total'] ?? 0),
+        'active'       => (int) ($ticketRow['active'] ?? 0),
+        'sold_online'  => (int) ($ticketRow['sold_online'] ?? 0),
+        'scans_used'   => $scansUsed,
+    ];
+}
+
+/**
+ * Allocated tickets for a distributor within one event.
+ *
+ * @return array<int, array<string, mixed>>
+ */
+function getDistributorTicketsForEvent(PDO $db, string $distributorId, int $eventId): array
+{
+    $stmt = $db->prepare(
+        'SELECT t.*, ti.name AS tier_name, ti.price, e.name AS event_name,
+                c.email AS customer_email, c.name AS customer_name
+         FROM tickets t
+         JOIN tiers ti ON ti.id = t.tier_id
+         JOIN events e ON e.id = t.event_id
+         LEFT JOIN customers c ON c.id = t.customer_id
+         WHERE t.allocated_distributor_id = :distributor_id AND t.event_id = :event_id
+         ORDER BY t.physical_number'
+    );
+    $stmt->execute(['distributor_id' => $distributorId, 'event_id' => $eventId]);
+
+    return $stmt->fetchAll();
+}
+
+/**
+ * Current request path for safe login redirects.
+ */
+function passgateCurrentPath(): string
+{
+    $uri = $_SERVER['REQUEST_URI'] ?? '';
+    if ($uri === '') {
+        return basename($_SERVER['SCRIPT_NAME'] ?? 'index.php');
+    }
+
+    return $uri;
+}
+
+/**
  * Whether a stall terminal session is active.
  */
 function isStallAuthenticated(): bool
@@ -670,12 +1235,15 @@ function isStallAuthenticated(): bool
  */
 function ensureStallsSchema(PDO $db): void
 {
+    ensureCategorySchema($db);
+
     $db->exec(
         'CREATE TABLE IF NOT EXISTS stalls (
             id            SERIAL PRIMARY KEY,
             name          VARCHAR(255) NOT NULL,
             email         VARCHAR(255) NOT NULL,
             password_hash VARCHAR(255) NOT NULL,
+            category      VARCHAR(50) NOT NULL DEFAULT \'general\',
             created_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )'
     );
@@ -706,7 +1274,7 @@ function ensureStallsSchema(PDO $db): void
  */
 function getStallsByEmail(PDO $db, string $email): array
 {
-    $stmt = $db->prepare('SELECT id, name, email, password_hash FROM stalls WHERE LOWER(email) = :email');
+    $stmt = $db->prepare('SELECT id, name, email, password_hash, category FROM stalls WHERE LOWER(email) = :email');
     $stmt->execute(['email' => strtolower(trim($email))]);
 
     return $stmt->fetchAll();
@@ -770,11 +1338,36 @@ function authenticateStall(PDO $db, string $email, string $password): ?array
 function establishStallSession(array $stall): void
 {
     session_regenerate_id(true);
+    clearCustomerSession();
     $_SESSION['stall_authenticated'] = true;
     $_SESSION['stall_id'] = (int) $stall['id'];
     $_SESSION['stall_name'] = (string) $stall['name'];
     $_SESSION['stall_email'] = (string) $stall['email'];
+    $_SESSION['stall_category'] = normalizeBenefitCategory((string) ($stall['category'] ?? 'general'), false);
+    if ($_SESSION['stall_category'] === '') {
+        $_SESSION['stall_category'] = 'general';
+    }
     unset($_SESSION['station_pin_unlocked'], $_SESSION['pin_station_type']);
+}
+
+/**
+ * Resolve stall category for benefit filtering (null = show all benefits for tier).
+ */
+function resolveStallCategoryFilter(): ?string
+{
+    $fromQuery = trim((string) ($_GET['stall_category'] ?? ''));
+    if ($fromQuery !== '') {
+        return normalizeBenefitCategory($fromQuery, false) ?: null;
+    }
+
+    if (isStallAuthenticated()) {
+        $fromSession = trim((string) ($_SESSION['stall_category'] ?? ''));
+        if ($fromSession !== '') {
+            return normalizeBenefitCategory($fromSession, false) ?: null;
+        }
+    }
+
+    return null;
 }
 
 /**
@@ -787,6 +1380,7 @@ function clearTerminalSession(): void
         $_SESSION['stall_id'],
         $_SESSION['stall_name'],
         $_SESSION['stall_email'],
+        $_SESSION['stall_category'],
         $_SESSION['station_pin_unlocked'],
         $_SESSION['pin_station_type']
     );
@@ -799,21 +1393,26 @@ function getAllStalls(PDO $db): array
 {
     ensureStallsSchema($db);
 
-    return $db->query('SELECT id, name, email, created_at FROM stalls ORDER BY name ASC')->fetchAll();
+    return $db->query('SELECT id, name, email, category, created_at FROM stalls ORDER BY name ASC')->fetchAll();
 }
 
 /**
  * Create a new stall account.
  */
-function createStall(PDO $db, string $name, string $email, string $password): int
+function createStall(PDO $db, string $name, string $email, string $password, string $category = ''): int
 {
     ensureStallsSchema($db);
 
     $name = trim($name);
     $email = strtolower(trim($email));
+    $category = normalizeBenefitCategory($category);
 
     if ($name === '' || $email === '' || $password === '') {
         throw new InvalidArgumentException('Name, email, and password are required.');
+    }
+
+    if ($category === '') {
+        throw new InvalidArgumentException('Stall category is required.');
     }
 
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
@@ -823,12 +1422,13 @@ function createStall(PDO $db, string $name, string $email, string $password): in
     assertUniqueStallPasswordForEmail($db, $email, $password);
 
     $stmt = $db->prepare(
-        'INSERT INTO stalls (name, email, password_hash) VALUES (:name, :email, :password_hash) RETURNING id'
+        'INSERT INTO stalls (name, email, password_hash, category) VALUES (:name, :email, :password_hash, :category) RETURNING id'
     );
     $stmt->execute([
         'name'          => $name,
         'email'         => $email,
         'password_hash' => password_hash($password, PASSWORD_DEFAULT),
+        'category'      => $category,
     ]);
 
     return (int) $stmt->fetchColumn();
@@ -881,9 +1481,19 @@ function deleteStall(PDO $db, int $stallId): void
 function resolveScanAuthContext(string $requestedStation): array
 {
     if (isStallAuthenticated()) {
+        $station = trim($requestedStation);
+        if ($station === '') {
+            return [
+                'allowed'  => false,
+                'station'  => '',
+                'stall_id' => null,
+                'message'  => 'Select a benefit before scanning.',
+            ];
+        }
+
         return [
             'allowed'  => true,
-            'station'  => (string) $_SESSION['stall_name'],
+            'station'  => $station,
             'stall_id' => (int) $_SESSION['stall_id'],
         ];
     }
@@ -906,33 +1516,11 @@ function resolveScanAuthContext(string $requestedStation): array
         ];
     }
 
-    if (!empty($_SESSION['station_pin_unlocked'])) {
-        $station = trim($requestedStation);
-        if ($station === '') {
-            $station = (string) ($_SESSION['pin_station_type'] ?? '');
-        }
-
-        if ($station === '') {
-            return [
-                'allowed' => false,
-                'station' => '',
-                'stall_id' => null,
-                'message' => 'station is required.',
-            ];
-        }
-
-        return [
-            'allowed'  => true,
-            'station'  => $station,
-            'stall_id' => null,
-        ];
-    }
-
     return [
         'allowed'  => false,
         'station'  => '',
         'stall_id' => null,
-        'message'  => 'Terminal not authenticated. Please log in as a stall.',
+        'message'  => 'Stall login required to scan.',
     ];
 }
 
@@ -945,13 +1533,15 @@ function redirectIfAuthenticated(): void
         return;
     }
 
-    $role = $_SESSION['distributor_role'] ?? '';
+    safeRedirect(distributorLoginRedirectPath((string) ($_SESSION['distributor_role'] ?? '')));
+}
 
-    if ($role === 'admin') {
-        safeRedirect('distributors.php');
-    }
-
-    safeRedirect('terminal.php');
+/**
+ * Post-login destination for distributor/admin sessions.
+ */
+function distributorLoginRedirectPath(string $role): string
+{
+    return $role === 'admin' ? 'distributors.php' : 'distributor_dashboard.php';
 }
 
 /**
@@ -1113,15 +1703,38 @@ function ensureCustomerSchema(PDO $db): void
             email            VARCHAR(255) NOT NULL,
             gateway          VARCHAR(20) NOT NULL DEFAULT \'esewa\',
             amount           DECIMAL(10, 2) NOT NULL,
+            quantity         INTEGER NOT NULL DEFAULT 1,
             created_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )'
     );
+
+    $pendingColCheck = $db->prepare(
+        "SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'payment_pending'
+           AND column_name = 'quantity'"
+    );
+    $pendingColCheck->execute();
+    if ($pendingColCheck->fetchColumn() === false) {
+        $db->exec('ALTER TABLE payment_pending ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1');
+    }
 
     $db->exec('CREATE INDEX IF NOT EXISTS idx_tickets_customer_id ON tickets (customer_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_customers_email ON customers (email)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_customer_tickets_customer ON customer_tickets (customer_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_customer_tickets_ticket ON customer_tickets (ticket_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_payment_pending_uuid ON payment_pending (transaction_uuid)');
+
+    $db->exec(
+        'CREATE TABLE IF NOT EXISTS password_resets (
+            id         SERIAL PRIMARY KEY,
+            email      VARCHAR(255) NOT NULL,
+            token      VARCHAR(64) NOT NULL UNIQUE,
+            expires_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )'
+    );
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_password_resets_email ON password_resets (email)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets (token)');
 }
 
 function isCustomerAuthenticated(): bool
@@ -1131,11 +1744,92 @@ function isCustomerAuthenticated(): bool
         && isset($_SESSION['customer_id']);
 }
 
-function requireCustomerAuth(): void
+function requireCustomerAuth(?string $next = null): void
 {
     if (!isCustomerAuthenticated()) {
-        safeRedirect('customer_login.php');
+        $target = 'customer_login.php';
+        if ($next !== null && $next !== '') {
+            $target .= '?next=' . urlencode($next);
+        }
+        safeRedirect($target);
     }
+}
+
+/**
+ * Load the logged-in customer from the database and verify the session is still valid.
+ *
+ * @return array<string, mixed>|null
+ */
+function getAuthenticatedCustomer(PDO $db): ?array
+{
+    if (!isCustomerAuthenticated()) {
+        return null;
+    }
+
+    ensureCustomerSchema($db);
+
+    $customerId = (int) $_SESSION['customer_id'];
+    if ($customerId <= 0) {
+        clearCustomerSession();
+
+        return null;
+    }
+
+    $stmt = $db->prepare('SELECT id, email, name FROM customers WHERE id = :id');
+    $stmt->execute(['id' => $customerId]);
+    $customer = $stmt->fetch();
+
+    if ($customer === false) {
+        clearCustomerSession();
+
+        return null;
+    }
+
+    $sessionEmail = strtolower(trim((string) ($_SESSION['customer_email'] ?? '')));
+    $dbEmail = strtolower(trim((string) $customer['email']));
+    if ($sessionEmail !== '' && $sessionEmail !== $dbEmail) {
+        auditLog('AUTH', "Customer session email mismatch for id {$customerId}");
+        clearCustomerSession();
+
+        return null;
+    }
+
+    return $customer;
+}
+
+function customerOwnsTicket(PDO $db, int $customerId, string $ticketId): bool
+{
+    ensureCustomerSchema($db);
+    $ticketId = trim($ticketId);
+    if ($ticketId === '' || $customerId <= 0) {
+        return false;
+    }
+
+    $stmt = $db->prepare(
+        'SELECT 1 FROM customer_tickets
+         WHERE customer_id = :customer_id AND ticket_id = :ticket_id'
+    );
+    $stmt->execute(['customer_id' => $customerId, 'ticket_id' => $ticketId]);
+
+    return $stmt->fetch() !== false;
+}
+
+/**
+ * Require a valid customer session backed by the database.
+ *
+ * @return array<string, mixed>
+ */
+function requireCustomerAuthValidated(PDO $db, ?string $next = null): array
+{
+    requireCustomerAuth($next);
+
+    $customer = getAuthenticatedCustomer($db);
+    if ($customer === null) {
+        $target = 'customer_login.php?next=' . urlencode($next ?? 'customer_dashboard.php');
+        safeRedirect($target);
+    }
+
+    return $customer;
 }
 
 /**
@@ -1206,9 +1900,150 @@ function authenticateCustomer(PDO $db, string $email, string $password): ?array
     return $customer;
 }
 
+/**
+ * Create a password-reset token and email it when the customer exists.
+ * Always returns without error so callers can show a generic success message.
+ */
+function requestCustomerPasswordReset(PDO $db, string $email): void
+{
+    ensureCustomerSchema($db);
+
+    $email = strtolower(trim($email));
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        return;
+    }
+
+    $customer = getCustomerByEmail($db, $email);
+    if ($customer === null) {
+        return;
+    }
+
+    $token = bin2hex(random_bytes(32));
+    $expiresAt = (new DateTimeImmutable('+1 hour'))->format('Y-m-d H:i:sP');
+
+    $purge = $db->prepare('DELETE FROM password_resets WHERE LOWER(email) = :email');
+    $purge->execute(['email' => $email]);
+
+    $insert = $db->prepare(
+        'INSERT INTO password_resets (email, token, expires_at) VALUES (:email, :token, :expires_at)'
+    );
+    $insert->execute([
+        'email' => $email,
+        'token' => $token,
+        'expires_at' => $expiresAt,
+    ]);
+
+    sendCustomerPasswordResetEmail($email, $token);
+    auditLog('AUTH', "Password reset requested for {$email}");
+}
+
+/**
+ * Send a customer password-reset link via SMTP (or dev_login.log in local mode).
+ */
+function sendCustomerPasswordResetEmail(string $email, string $token): bool
+{
+    require_once __DIR__ . '/mailer.php';
+
+    $appUrl = rtrim(env('APP_URL', 'http://localhost:8000'), '/');
+    $link = $appUrl . '/reset_password.php?token=' . urlencode($token) . '&email=' . urlencode($email);
+
+    $subject = 'Reset your PassGate password';
+    $textBody = "We received a request to reset your PassGate password.\n\n"
+        . "Click the link below to choose a new password. This link expires in 1 hour.\n\n{$link}\n\n"
+        . "If you did not request this, you can ignore this email.\n";
+    $htmlBody = '<p>We received a request to reset your PassGate password.</p>'
+        . '<p>Click the link below to choose a new password. This link expires in 1 hour.</p>'
+        . '<p><a href="' . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '">Reset your password</a></p>'
+        . '<p>Or copy this URL:<br><code>' . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '</code></p>'
+        . '<p>If you did not request this, you can ignore this email.</p>';
+
+    if (shouldUseDevMailFallback()) {
+        writeDevLoginLink($email, $link);
+
+        return true;
+    }
+
+    $result = sendSmtpEmail($email, $subject, $textBody, $htmlBody);
+
+    if (!$result['success']) {
+        auditLog('MAIL', "Password reset SMTP failed for {$email}: {$result['error']}");
+    }
+
+    return $result['success'];
+}
+
+/**
+ * @return array<string, mixed>|null
+ */
+function findValidPasswordReset(PDO $db, string $email, string $token): ?array
+{
+    ensureCustomerSchema($db);
+
+    $stmt = $db->prepare(
+        'SELECT * FROM password_resets
+         WHERE token = :token AND LOWER(email) = :email AND expires_at > NOW()'
+    );
+    $stmt->execute([
+        'token' => $token,
+        'email' => strtolower(trim($email)),
+    ]);
+
+    $row = $stmt->fetch();
+
+    return $row ?: null;
+}
+
+/**
+ * Update the customer password and invalidate the reset token.
+ *
+ * @throws InvalidArgumentException
+ */
+function resetCustomerPassword(PDO $db, string $email, string $token, string $newPassword): bool
+{
+    if (strlen($newPassword) < 6) {
+        throw new InvalidArgumentException('Password must be at least 6 characters.');
+    }
+
+    $reset = findValidPasswordReset($db, $email, $token);
+    if ($reset === null) {
+        return false;
+    }
+
+    $customer = getCustomerByEmail($db, $email);
+    if ($customer === null) {
+        return false;
+    }
+
+    $hash = password_hash($newPassword, PASSWORD_DEFAULT);
+
+    $db->beginTransaction();
+
+    try {
+        $update = $db->prepare(
+            'UPDATE customers SET password_hash = :hash, updated_at = NOW() WHERE id = :id'
+        );
+        $update->execute(['hash' => $hash, 'id' => $customer['id']]);
+
+        $delete = $db->prepare('DELETE FROM password_resets WHERE id = :id');
+        $delete->execute(['id' => $reset['id']]);
+
+        $db->commit();
+        auditLog('AUTH', "Password reset completed for {$email}");
+
+        return true;
+    } catch (Throwable $e) {
+        $db->rollBack();
+
+        throw $e;
+    }
+}
+
 function establishCustomerSession(array $customer): void
 {
     session_regenerate_id(true);
+    clearTerminalSession();
+    clearDistributorSession();
+    clearCustomerSession();
     $_SESSION['customer_authenticated'] = true;
     $_SESSION['customer_id'] = (int) $customer['id'];
     $_SESSION['customer_email'] = (string) $customer['email'];
@@ -1222,6 +2057,16 @@ function clearCustomerSession(): void
         $_SESSION['customer_id'],
         $_SESSION['customer_email'],
         $_SESSION['customer_name']
+    );
+}
+
+function clearDistributorSession(): void
+{
+    unset(
+        $_SESSION['distributor_authenticated'],
+        $_SESSION['distributor_email'],
+        $_SESSION['distributor_role'],
+        $_SESSION['distributor_id']
     );
 }
 
@@ -1324,17 +2169,51 @@ function getOrCreateCustomerForPurchase(PDO $db, string $email, string $name = '
 }
 
 /**
- * Unified ticket assignment after successful online payment (Stripe or eSewa).
+ * Normalize and validate a purchase quantity against vault availability.
  *
- * @return array{success: bool, ticket_id: ?string, message: string, email: string, event_name?: string, tier_name?: string}
+ * @throws InvalidArgumentException when quantity is invalid or exceeds availability
  */
-function assignTicket(
+function parsePurchaseQuantity(mixed $rawQuantity, int $maxAvailable): int
+{
+    if (!is_numeric($rawQuantity)) {
+        throw new InvalidArgumentException('Quantity must be a number.');
+    }
+
+    $quantity = (int) $rawQuantity;
+    if ($quantity < 1) {
+        throw new InvalidArgumentException('Quantity must be at least 1.');
+    }
+
+    if ($quantity > $maxAvailable) {
+        throw new InvalidArgumentException("Only {$maxAvailable} ticket(s) available.");
+    }
+
+    return $quantity;
+}
+
+/**
+ * Unified multi-ticket assignment after successful online payment (Stripe or eSewa).
+ *
+ * @return array{
+ *   success: bool,
+ *   ticket_ids: list<string>,
+ *   ticket_id: ?string,
+ *   message: string,
+ *   email: string,
+ *   event_name?: string,
+ *   tier_name?: string,
+ *   quantity_requested?: int,
+ *   quantity_assigned?: int
+ * }
+ */
+function assignMultipleTickets(
     PDO $db,
     int $eventId,
     int $tierId,
     string $customerEmail,
     string $gateway,
     string $paymentId,
+    int $quantity,
     ?string $paymentReference = null
 ): array {
     ensureCustomerSchema($db);
@@ -1343,25 +2222,31 @@ function assignTicket(
     $paymentId = trim($paymentId);
     $paymentReference = trim($paymentReference ?? $paymentId);
     $customerEmail = strtolower(trim($customerEmail));
+    $quantity = max(1, $quantity);
 
     // Idempotent – webhook, success page, and callback may all call this
     $existingStmt = $db->prepare(
         'SELECT ct.ticket_id, c.email
          FROM customer_tickets ct
          JOIN customers c ON c.id = ct.customer_id
-         WHERE ct.payment_id = :payment_id OR ct.payment_reference = :payment_reference'
+         WHERE ct.payment_id = :payment_id OR ct.payment_reference = :payment_reference
+         ORDER BY ct.ticket_id ASC'
     );
     $existingStmt->execute([
         'payment_id'        => $paymentId,
         'payment_reference' => $paymentReference,
     ]);
-    $existing = $existingStmt->fetch();
-    if ($existing !== false) {
+    $existingRows = $existingStmt->fetchAll();
+    if ($existingRows !== []) {
+        $ticketIds = array_map(static fn (array $row): string => (string) $row['ticket_id'], $existingRows);
         $result = [
-            'success'   => true,
-            'ticket_id' => (string) $existing['ticket_id'],
-            'message'   => 'Already fulfilled.',
-            'email'     => (string) $existing['email'],
+            'success'             => true,
+            'ticket_ids'          => $ticketIds,
+            'ticket_id'           => $ticketIds[0] ?? null,
+            'message'             => 'Already fulfilled.',
+            'email'               => (string) $existingRows[0]['email'],
+            'quantity_requested'  => $quantity,
+            'quantity_assigned'   => count($ticketIds),
         ];
 
         return enrichAssignTicketResult($db, $tierId, $result);
@@ -1376,17 +2261,32 @@ function assignTicket(
                AND customer_id IS NULL AND status = 'Active'
                AND (allocated_distributor_id IS NULL OR allocated_distributor_id = '')
              ORDER BY physical_number ASC
-             LIMIT 1
+             LIMIT :quantity
              FOR UPDATE"
         );
-        $ticketStmt->execute(['event_id' => $eventId, 'tier_id' => $tierId]);
-        $ticketId = $ticketStmt->fetchColumn();
+        $ticketStmt->bindValue('event_id', $eventId, PDO::PARAM_INT);
+        $ticketStmt->bindValue('tier_id', $tierId, PDO::PARAM_INT);
+        $ticketStmt->bindValue('quantity', $quantity, PDO::PARAM_INT);
+        $ticketStmt->execute();
+        $ticketRows = $ticketStmt->fetchAll(PDO::FETCH_COLUMN);
 
-        if ($ticketId === false) {
+        if (count($ticketRows) < $quantity) {
             $db->rollBack();
-            auditLog('SALE', "No tickets left for event {$eventId} tier {$tierId} ({$gateway} {$paymentId})");
+            auditLog(
+                'SALE',
+                'Insufficient tickets for event ' . $eventId . ' tier ' . $tierId
+                . " (needed {$quantity}, found " . count($ticketRows) . ", {$gateway} {$paymentId})"
+            );
 
-            return ['success' => false, 'ticket_id' => null, 'message' => 'No tickets available.', 'email' => $customerEmail];
+            return [
+                'success'            => false,
+                'ticket_ids'         => [],
+                'ticket_id'          => null,
+                'message'            => 'Not enough tickets available.',
+                'email'              => $customerEmail,
+                'quantity_requested' => $quantity,
+                'quantity_assigned'  => 0,
+            ];
         }
 
         $customerId = getOrCreateCustomerForPurchase($db, $customerEmail);
@@ -1399,30 +2299,41 @@ function assignTicket(
                 allocated_distributor_name = 'Online Sale'
              WHERE id = :ticket_id"
         );
-        $update->execute(['customer_id' => $customerId, 'ticket_id' => $ticketId]);
-
         $link = $db->prepare(
             'INSERT INTO customer_tickets
                 (customer_id, ticket_id, payment_id, payment_gateway, payment_reference)
              VALUES (:customer_id, :ticket_id, :payment_id, :payment_gateway, :payment_reference)'
         );
-        $link->execute([
-            'customer_id'       => $customerId,
-            'ticket_id'         => $ticketId,
-            'payment_id'        => $paymentId,
-            'payment_gateway'   => $gateway,
-            'payment_reference' => $paymentReference,
-        ]);
+
+        $assignedIds = [];
+        foreach ($ticketRows as $ticketId) {
+            $update->execute(['customer_id' => $customerId, 'ticket_id' => $ticketId]);
+            $link->execute([
+                'customer_id'       => $customerId,
+                'ticket_id'         => $ticketId,
+                'payment_id'        => $paymentId,
+                'payment_gateway'   => $gateway,
+                'payment_reference' => $paymentReference,
+            ]);
+            $assignedIds[] = (string) $ticketId;
+        }
 
         $db->commit();
 
-        auditLog('SALE', "Ticket {$ticketId} sold via {$gateway} to {$customerEmail} (ref {$paymentReference})");
+        $assignedCount = count($assignedIds);
+        auditLog(
+            'SALE',
+            "{$assignedCount} ticket(s) sold via {$gateway} to {$customerEmail} (ref {$paymentReference})"
+        );
 
         $result = [
-            'success'   => true,
-            'ticket_id' => (string) $ticketId,
-            'message'   => 'Ticket assigned.',
-            'email'     => $customerEmail,
+            'success'            => true,
+            'ticket_ids'         => $assignedIds,
+            'ticket_id'          => $assignedIds[0] ?? null,
+            'message'            => $assignedCount === 1 ? 'Ticket assigned.' : 'Tickets assigned.',
+            'email'              => $customerEmail,
+            'quantity_requested' => $quantity,
+            'quantity_assigned'  => $assignedCount,
         ];
 
         return enrichAssignTicketResult($db, $tierId, $result);
@@ -1432,13 +2343,47 @@ function assignTicket(
         }
         auditLog('SALE', 'Fulfillment error: ' . $e->getMessage());
 
-        return ['success' => false, 'ticket_id' => null, 'message' => $e->getMessage(), 'email' => $customerEmail];
+        return [
+            'success'            => false,
+            'ticket_ids'         => [],
+            'ticket_id'          => null,
+            'message'            => $e->getMessage(),
+            'email'              => $customerEmail,
+            'quantity_requested' => $quantity,
+            'quantity_assigned'  => 0,
+        ];
     }
 }
 
 /**
- * @param array{success: bool, ticket_id: ?string, message: string, email: string} $result
- * @return array{success: bool, ticket_id: ?string, message: string, email: string, event_name?: string, tier_name?: string}
+ * Unified ticket assignment after successful online payment (Stripe or eSewa).
+ *
+ * @return array{success: bool, ticket_id: ?string, ticket_ids?: list<string>, message: string, email: string, event_name?: string, tier_name?: string}
+ */
+function assignTicket(
+    PDO $db,
+    int $eventId,
+    int $tierId,
+    string $customerEmail,
+    string $gateway,
+    string $paymentId,
+    ?string $paymentReference = null
+): array {
+    return assignMultipleTickets(
+        $db,
+        $eventId,
+        $tierId,
+        $customerEmail,
+        $gateway,
+        $paymentId,
+        1,
+        $paymentReference
+    );
+}
+
+/**
+ * @param array{success: bool, ticket_id: ?string, ticket_ids?: list<string>, message: string, email: string} $result
+ * @return array{success: bool, ticket_id: ?string, ticket_ids?: list<string>, message: string, email: string, event_name?: string, tier_name?: string}
  */
 function enrichAssignTicketResult(PDO $db, int $tierId, array $result): array
 {
@@ -1478,13 +2423,14 @@ function fulfillOnlineTicketPurchase(
 /**
  * Fulfill a Stripe Checkout session (used by webhook and purchase success page).
  *
- * @return array{success: bool, ticket_id: ?string, message: string, email: string, event_name?: string, tier_name?: string}
+ * @return array{success: bool, ticket_id: ?string, ticket_ids?: list<string>, message: string, email: string, event_name?: string, tier_name?: string}
  */
 function fulfillStripeCheckoutSession(PDO $db, object $session): array
 {
     $eventId = (int) ($session->metadata['event_id'] ?? 0);
     $tierId = (int) ($session->metadata['tier_id'] ?? 0);
     $email = strtolower(trim($session->metadata['email'] ?? $session->customer_email ?? ''));
+    $quantity = max(1, (int) ($session->metadata['quantity'] ?? 1));
 
     if ($eventId <= 0 || $tierId <= 0) {
         $ref = (string) ($session->client_reference_id ?? '');
@@ -1494,13 +2440,21 @@ function fulfillStripeCheckoutSession(PDO $db, object $session): array
     }
 
     if ($eventId <= 0 || $tierId <= 0 || $email === '') {
-        return ['success' => false, 'ticket_id' => null, 'message' => 'Missing checkout metadata.', 'email' => ''];
+        return ['success' => false, 'ticket_id' => null, 'ticket_ids' => [], 'message' => 'Missing checkout metadata.', 'email' => ''];
     }
 
-    $result = assignTicket($db, $eventId, $tierId, $email, 'stripe', (string) $session->id);
+    $result = assignMultipleTickets($db, $eventId, $tierId, $email, 'stripe', (string) $session->id, $quantity);
     $result['email'] = $email;
 
     return $result;
+}
+
+/**
+ * Whether a fulfillment result should trigger the purchase confirmation email.
+ */
+function shouldSendPurchaseEmail(string $message): bool
+{
+    return in_array($message, ['Ticket assigned.', 'Tickets assigned.'], true);
 }
 
 /**
@@ -1585,36 +2539,68 @@ function isDevCheckoutEnabled(): bool
 }
 
 /**
- * Send ticket QR email after online purchase.
+ * Send ticket QR email after online purchase (single or multiple tickets).
+ *
+ * @param string|list<string> $ticketIds
  */
-function sendTicketPurchaseEmail(string $email, string $ticketId, string $eventName, string $tierName): bool
+function sendTicketPurchaseEmail(string $email, string|array $ticketIds, string $eventName, string $tierName): bool
 {
     require_once __DIR__ . '/mailer.php';
 
+    $ticketIds = is_array($ticketIds) ? array_values($ticketIds) : [trim($ticketIds)];
+    $ticketIds = array_values(array_filter($ticketIds, static fn (string $id): bool => $id !== ''));
+
+    if ($ticketIds === []) {
+        return false;
+    }
+
     $appUrl = rtrim(env('APP_URL', 'http://localhost:8000'), '/');
-    $qrUrl = $appUrl . '/qr.php?id=' . urlencode($ticketId);
     $loginUrl = $appUrl . '/customer_login.php';
     $registerUrl = $appUrl . '/customer_register.php';
     $dashboardUrl = $appUrl . '/customer_dashboard.php';
 
-    $subject = "Your PassGate ticket – {$eventName}";
-    $textBody = "Thank you for your purchase!\n\n"
-        . "Event: {$eventName}\nTier: {$tierName}\nTicket ID: {$ticketId}\n\n"
-        . "View your QR code: {$qrUrl}\n\n"
-        . "Create an account to manage tickets: {$registerUrl}\n"
-        . "Already registered? Log in: {$loginUrl}\n";
+    $count = count($ticketIds);
+    $subject = $count === 1
+        ? "Your PassGate ticket – {$eventName}"
+        : "Your {$count} PassGate tickets – {$eventName}";
+
+    $textLines = [
+        'Thank you for your purchase!',
+        '',
+        "Event: {$eventName}",
+        "Tier: {$tierName}",
+        'Tickets:',
+    ];
+    $htmlTicketBlocks = '';
+
+    foreach ($ticketIds as $ticketId) {
+        $qrUrl = $appUrl . '/qr.php?id=' . urlencode($ticketId);
+        $textLines[] = "- {$ticketId}: {$qrUrl}";
+        $htmlTicketBlocks .= '<div style="margin:0 0 1rem;padding:0.75rem;border:1px solid #e2e8f0;border-radius:0.5rem;">'
+            . '<strong>Ticket ID:</strong> <code>' . htmlspecialchars($ticketId) . '</code><br>'
+            . '<a href="' . htmlspecialchars($qrUrl, ENT_QUOTES, 'UTF-8') . '">View QR code</a><br>'
+            . '<img src="' . htmlspecialchars($qrUrl, ENT_QUOTES, 'UTF-8') . '" alt="Ticket QR" width="180" height="180">'
+            . '</div>';
+    }
+
+    $textLines[] = '';
+    $textLines[] = "View all tickets: {$dashboardUrl}";
+    $textLines[] = "Create an account: {$registerUrl}";
+    $textLines[] = "Log in: {$loginUrl}";
+
+    $textBody = implode("\n", $textLines);
     $htmlBody = '<p>Thank you for your purchase!</p>'
         . '<p><strong>Event:</strong> ' . htmlspecialchars($eventName) . '<br>'
         . '<strong>Tier:</strong> ' . htmlspecialchars($tierName) . '<br>'
-        . '<strong>Ticket ID:</strong> <code>' . htmlspecialchars($ticketId) . '</code></p>'
-        . '<p><a href="' . htmlspecialchars($qrUrl, ENT_QUOTES, 'UTF-8') . '">View QR code</a></p>'
-        . '<p><img src="' . htmlspecialchars($qrUrl, ENT_QUOTES, 'UTF-8') . '" alt="Ticket QR" width="200" height="200"></p>'
-        . '<p><a href="' . htmlspecialchars($registerUrl, ENT_QUOTES, 'UTF-8') . '">Create account</a> · '
-        . '<a href="' . htmlspecialchars($loginUrl, ENT_QUOTES, 'UTF-8') . '">Log in</a> · '
-        . '<a href="' . htmlspecialchars($dashboardUrl, ENT_QUOTES, 'UTF-8') . '">Dashboard</a></p>';
+        . '<strong>Tickets:</strong> ' . $count . '</p>'
+        . $htmlTicketBlocks
+        . '<p><a href="' . htmlspecialchars($dashboardUrl, ENT_QUOTES, 'UTF-8') . '">View your dashboard</a> · '
+        . '<a href="' . htmlspecialchars($registerUrl, ENT_QUOTES, 'UTF-8') . '">Create account</a> · '
+        . '<a href="' . htmlspecialchars($loginUrl, ENT_QUOTES, 'UTF-8') . '">Log in</a></p>';
 
     if (shouldUseDevMailFallback()) {
-        writeDevLoginLink($email, "TICKET {$ticketId}\nQR: {$qrUrl}\nLogin: {$loginUrl}");
+        $devBody = "TICKETS (" . $count . ")\n" . implode("\n", $ticketIds) . "\nDashboard: {$dashboardUrl}";
+        writeDevLoginLink($email, $devBody);
 
         return true;
     }
@@ -1729,13 +2715,14 @@ function createPendingPurchase(
     int $tierId,
     string $email,
     float $amount,
-    string $gateway = 'esewa'
+    string $gateway = 'esewa',
+    int $quantity = 1
 ): void {
     ensureCustomerSchema($db);
 
     $stmt = $db->prepare(
-        'INSERT INTO payment_pending (transaction_uuid, event_id, tier_id, email, gateway, amount)
-         VALUES (:uuid, :event_id, :tier_id, :email, :gateway, :amount)'
+        'INSERT INTO payment_pending (transaction_uuid, event_id, tier_id, email, gateway, amount, quantity)
+         VALUES (:uuid, :event_id, :tier_id, :email, :gateway, :amount, :quantity)'
     );
     $stmt->execute([
         'uuid'     => $transactionUuid,
@@ -1744,6 +2731,7 @@ function createPendingPurchase(
         'email'    => strtolower(trim($email)),
         'gateway'  => $gateway,
         'amount'   => $amount,
+        'quantity' => max(1, $quantity),
     ]);
 }
 
@@ -1770,23 +2758,30 @@ function buildEsewaPaymentForm(
     int $eventId,
     int $tierId,
     string $email,
-    float $price,
+    float $unitPrice,
     string $eventName,
-    string $tierName
+    string $tierName,
+    int $quantity = 1
 ): array {
     $merchantCode = getEsewaMerchantCode();
     $secretKey = getEsewaSecretKey();
     $appUrl = rtrim(env('APP_URL', 'http://localhost:8000'), '/');
 
-    $amountStr = number_format($price, 2, '.', '');
+    $quantity = max(1, $quantity);
+    $totalPrice = $unitPrice * $quantity;
+    $amountStr = number_format($totalPrice, 2, '.', '');
     $transactionUuid = generateEsewaTransactionUuid();
 
     $db = getDb();
-    createPendingPurchase($db, $transactionUuid, $eventId, $tierId, $email, $price, 'esewa');
+    createPendingPurchase($db, $transactionUuid, $eventId, $tierId, $email, $totalPrice, 'esewa', $quantity);
 
     $signature = generateEsewaSignature($amountStr, $transactionUuid, $merchantCode, $secretKey);
 
-    auditLog('ESEWA', "Payment initiated {$transactionUuid} for {$email} event {$eventId} tier {$tierId} ({$eventName} – {$tierName})");
+    auditLog(
+        'ESEWA',
+        "Payment initiated {$transactionUuid} for {$email} event {$eventId} tier {$tierId}"
+        . " qty {$quantity} ({$eventName} – {$tierName})"
+    );
 
     return [
         'esewa_url'               => getEsewaFormUrl(),
@@ -1807,7 +2802,7 @@ function buildEsewaPaymentForm(
 /**
  * Fulfill ticket after verified eSewa callback.
  *
- * @return array{success: bool, ticket_id: ?string, message: string, email: string, event_name?: string, tier_name?: string}
+ * @return array{success: bool, ticket_id: ?string, ticket_ids?: list<string>, message: string, email: string, event_name?: string, tier_name?: string}
  */
 function fulfillEsewaPayment(PDO $db, array $callbackData): array
 {
@@ -1816,29 +2811,32 @@ function fulfillEsewaPayment(PDO $db, array $callbackData): array
     $transactionCode = trim($callbackData['transaction_code'] ?? '');
 
     if ($transactionUuid === '') {
-        return ['success' => false, 'ticket_id' => null, 'message' => 'Missing transaction UUID.', 'email' => ''];
+        return ['success' => false, 'ticket_id' => null, 'ticket_ids' => [], 'message' => 'Missing transaction UUID.', 'email' => ''];
     }
 
     if ($status !== 'COMPLETE') {
         auditLog('ESEWA', "Payment not complete for {$transactionUuid}: {$status}");
 
-        return ['success' => false, 'ticket_id' => null, 'message' => 'Payment not completed.', 'email' => ''];
+        return ['success' => false, 'ticket_id' => null, 'ticket_ids' => [], 'message' => 'Payment not completed.', 'email' => ''];
     }
 
     $pending = getPendingPurchase($db, $transactionUuid);
     if ($pending === null) {
         auditLog('ESEWA', "No pending purchase for {$transactionUuid}");
 
-        return ['success' => false, 'ticket_id' => null, 'message' => 'Unknown transaction.', 'email' => ''];
+        return ['success' => false, 'ticket_id' => null, 'ticket_ids' => [], 'message' => 'Unknown transaction.', 'email' => ''];
     }
 
-    return assignTicket(
+    $quantity = max(1, (int) ($pending['quantity'] ?? 1));
+
+    return assignMultipleTickets(
         $db,
         (int) $pending['event_id'],
         (int) $pending['tier_id'],
         (string) $pending['email'],
         'esewa',
         $transactionUuid,
+        $quantity,
         $transactionCode !== '' ? $transactionCode : $transactionUuid
     );
 }

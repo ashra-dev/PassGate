@@ -21,6 +21,15 @@ $input = json_decode(file_get_contents('php://input') ?: '', true) ?? [];
 $eventId = (int) ($input['event_id'] ?? 0);
 $tierId = (int) ($input['tier_id'] ?? 0);
 $email = strtolower(trim($input['email'] ?? ''));
+$quantityRaw = $input['quantity'] ?? 1;
+
+if (!isCustomerAuthenticated()) {
+    http_response_code(401);
+    echo json_encode(['status' => 'error', 'message' => 'Please log in before buying.']);
+    exit;
+}
+
+$email = strtolower(trim((string) ($_SESSION['customer_email'] ?? '')));
 
 if (!isCustomerAuthenticated()) {
     http_response_code(401);
@@ -67,6 +76,14 @@ try {
         exit;
     }
 
+    try {
+        $quantity = parsePurchaseQuantity($quantityRaw, $available);
+    } catch (InvalidArgumentException $e) {
+        http_response_code(400);
+        echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        exit;
+    }
+
     $appUrl = rtrim(env('APP_URL', 'http://localhost:8000'), '/');
     $currency = getStripeCurrency();
     $unitAmount = (int) round((float) $tier['price'] * 100);
@@ -83,15 +100,18 @@ try {
             'event_id' => (string) $eventId,
             'tier_id'  => (string) $tierId,
             'email'    => $email,
+            'quantity' => (string) $quantity,
         ],
         'line_items'          => [[
-            'quantity'   => 1,
+            'quantity'   => $quantity,
             'price_data' => [
                 'currency'     => $currency,
                 'unit_amount'  => $unitAmount,
                 'product_data' => [
                     'name'        => $tier['event_name'] . ' – ' . $tier['name'],
-                    'description' => 'PassGate event ticket',
+                    'description' => $quantity === 1
+                        ? 'PassGate event ticket'
+                        : "PassGate event tickets (×{$quantity})",
                 ],
             ],
         ]],
@@ -99,7 +119,7 @@ try {
         'cancel_url'  => $appUrl . '/buy.php?cancel=1',
     ]);
 
-    auditLog('STRIPE', "Checkout session {$session->id} for {$email} event {$eventId} tier {$tierId}");
+    auditLog('STRIPE', "Checkout session {$session->id} for {$email} event {$eventId} tier {$tierId} qty {$quantity}");
 
     echo json_encode(['status' => 'success', 'url' => $session->url]);
 } catch (Throwable $e) {

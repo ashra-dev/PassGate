@@ -35,6 +35,12 @@ if ($token !== '' && $email !== '') {
     <?php passgateRenderHead('PassGate – Login'); ?>
 </head>
 <body class="pg-body">
+    <?php passgateRenderStaffNav('admin-login'); ?>
+    <?php passgateRenderBreadcrumb([
+        ['label' => 'Home', 'href' => 'index.php'],
+        ['label' => 'Staff', 'href' => 'terminal.php'],
+        ['label' => 'Login'],
+    ]); ?>
     <div class="pg-auth-stage">
         <div class="pg-card pg-card--auth" style="text-align:center;">
             <div class="pg-brand-mark" style="margin:0 auto 0.85rem;font-size:1.1rem;">
@@ -47,19 +53,22 @@ if ($token !== '' && $email !== '') {
                     <?php echo htmlspecialchars($error); ?>
                 </div>
                 <div style="margin-top:1rem;display:grid;gap:0.55rem;">
-                    <a class="pg-btn pg-btn--gold" href="manual_login.php">Try manual login</a>
-                    <a class="pg-btn pg-btn--ghost" href="terminal.php">Staff login</a>
+                    <a class="pg-btn pg-btn--gold" href="admin_login.php">Request new login link</a>
+                    <a class="pg-btn pg-btn--ghost" href="manual_login.php">Paste token manually</a>
+                    <a class="pg-btn pg-btn--ghost" href="terminal.php">Staff scanner</a>
                 </div>
             <?php else: ?>
                 <p class="pg-muted" style="margin:1rem 0 0;font-size:0.9rem;line-height:1.45;">
-                    Use the login link from your email, or paste your token manually.
+                    Open the link from your email, or request a new one below.
                 </p>
                 <div style="margin-top:1.25rem;display:grid;gap:0.55rem;">
-                    <a class="pg-btn pg-btn--gold" href="manual_login.php">Manual login with token</a>
+                    <a class="pg-btn pg-btn--gold" href="admin_login.php">Admin login (email link)</a>
+                    <a class="pg-btn pg-btn--ghost" href="manual_login.php">Paste token manually</a>
                     <a class="pg-btn pg-btn--ghost" href="index.php">Go to home</a>
                 </div>
             <?php endif; ?>
         </div>
     </div>
+    <?php passgateRenderPublicFooter(); ?>
 </body>
 </html>

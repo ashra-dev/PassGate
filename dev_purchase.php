@@ -30,6 +30,7 @@ if (!isDevCheckoutEnabled()) {
 $input = json_decode(file_get_contents('php://input') ?: '', true) ?? [];
 $eventId = (int) ($input['event_id'] ?? 0);
 $tierId = (int) ($input['tier_id'] ?? 0);
+$quantityRaw = $input['quantity'] ?? 1;
 
 if (!isCustomerAuthenticated()) {
     http_response_code(401);
@@ -49,21 +50,37 @@ try {
     $db = getDb();
     ensureCustomerSchema($db);
 
-    $paymentId = 'DEV-' . bin2hex(random_bytes(8));
-    $result = assignTicket($db, $eventId, $tierId, $email, 'dev', $paymentId, $paymentId);
+    $available = countAvailableTicketsForTier($db, $tierId, $eventId);
+    if ($available <= 0) {
+        http_response_code(409);
+        echo json_encode(['status' => 'error', 'message' => 'Sold out.']);
+        exit;
+    }
 
-    if (!$result['success'] || $result['ticket_id'] === null) {
+    try {
+        $quantity = parsePurchaseQuantity($quantityRaw, $available);
+    } catch (InvalidArgumentException $e) {
+        http_response_code(400);
+        echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        exit;
+    }
+
+    $paymentId = 'DEV-' . bin2hex(random_bytes(8));
+    $result = assignMultipleTickets($db, $eventId, $tierId, $email, 'dev', $paymentId, $quantity, $paymentId);
+
+    if (!$result['success'] || ($result['ticket_ids'] ?? []) === []) {
         http_response_code(409);
         echo json_encode(['status' => 'error', 'message' => $result['message'] ?? 'Could not assign ticket.']);
         exit;
     }
 
+    $ticketIds = $result['ticket_ids'];
     $ticketId = $result['ticket_id'];
     $eventName = $result['event_name'] ?? 'Event';
     $tierName = $result['tier_name'] ?? '';
 
-    if (($result['message'] ?? '') === 'Ticket assigned.') {
-        sendTicketPurchaseEmail($email, $ticketId, $eventName, $tierName);
+    if (shouldSendPurchaseEmail((string) ($result['message'] ?? ''))) {
+        sendTicketPurchaseEmail($email, $ticketIds, $eventName, $tierName);
     }
 
     $customer = getCustomerByEmail($db, $email);
@@ -71,11 +88,11 @@ try {
         establishCustomerSession($customer);
     }
 
-    auditLog('DEV-PAY', "Simulated purchase – ticket {$ticketId} for {$email}");
+    auditLog('DEV-PAY', 'Simulated purchase – ' . count($ticketIds) . " ticket(s) for {$email}");
 
     echo json_encode([
         'status' => 'success',
-        'url'    => 'thankyou.php?ticket=' . urlencode($ticketId) . '&gateway=dev',
+        'url'    => 'customer_dashboard.php?new=1&count=' . count($ticketIds),
     ]);
 } catch (Throwable $e) {
     auditLog('DEV-PAY', 'Error: ' . $e->getMessage());

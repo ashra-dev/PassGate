@@ -43,17 +43,17 @@ try {
     $db = getDb();
     $result = fulfillEsewaPayment($db, $callbackData);
 
-    if (!$result['success'] || $result['ticket_id'] === null) {
+    if (!$result['success'] || ($result['ticket_ids'] ?? []) === []) {
         throw new RuntimeException($result['message'] ?? 'Could not assign ticket.');
     }
 
     $customerEmail = $result['email'];
-    $ticketId = $result['ticket_id'];
+    $ticketIds = $result['ticket_ids'];
     $eventName = $result['event_name'] ?? 'Event';
     $tierName = $result['tier_name'] ?? '';
 
-    if (($result['message'] ?? '') === 'Ticket assigned.') {
-        sendTicketPurchaseEmail($customerEmail, $ticketId, $eventName, $tierName);
+    if (shouldSendPurchaseEmail((string) ($result['message'] ?? ''))) {
+        sendTicketPurchaseEmail($customerEmail, $ticketIds, $eventName, $tierName);
     }
 
     $customer = getCustomerByEmail($db, $customerEmail);
@@ -61,9 +61,9 @@ try {
         establishCustomerSession($customer);
     }
 
-    auditLog('ESEWA', "Payment complete – ticket {$ticketId} for {$customerEmail}");
+    auditLog('ESEWA', 'Payment complete – ' . count($ticketIds) . " ticket(s) for {$customerEmail}");
 
-    safeRedirect('thankyou.php?ticket=' . urlencode($ticketId) . '&gateway=esewa');
+    safeRedirect('customer_dashboard.php?new=1&count=' . count($ticketIds) . '&gateway=esewa');
 } catch (Throwable $e) {
     auditLog('ESEWA', 'Callback error: ' . $e->getMessage());
     $errorMsg = env('APP_DEBUG', '0') === '1' ? $e->getMessage() : 'Payment verification failed.';

@@ -34,6 +34,10 @@ try {
 
     if ($action === 'scan' && $method === 'POST') {
         handleScan($db);
+    } elseif ($action === 'ticket_status' && $method === 'GET') {
+        handleTicketStatus($db);
+    } elseif ($action === 'get_benefits' && $method === 'GET') {
+        handleGetBenefits($db);
     } elseif ($action === 'ticket' && $method === 'GET') {
         handleGetTicket($db);
     } else {
@@ -116,13 +120,83 @@ function handleScan(PDO $db): void
 }
 
 /**
+ * GET /api.php?action=ticket_status&id=... – read-only lookup for staff terminal.
+ */
+function handleTicketStatus(PDO $db): void
+{
+    if (!isStallAuthenticated() && !isDistributorAuthenticated()) {
+        http_response_code(401);
+        echo json_encode(['status' => 'error', 'message' => 'Staff login required.']);
+        return;
+    }
+
+    $ticketId = trim($_GET['id'] ?? '');
+    if ($ticketId === '') {
+        http_response_code(400);
+        echo json_encode(['status' => 'error', 'message' => 'Ticket ID is required.']);
+        return;
+    }
+
+    if (preg_match('/^\d+$/', $ticketId)) {
+        $ticketId = str_pad($ticketId, 6, '0', STR_PAD_LEFT);
+    }
+
+    $payload = buildTicketStatusPayload($db, $ticketId);
+    if ($payload === null) {
+        http_response_code(404);
+        echo json_encode(['status' => 'error', 'message' => 'Ticket not found.']);
+        return;
+    }
+
+    echo json_encode(['status' => 'success', 'data' => $payload]);
+}
+
+/**
+ * GET /api.php?action=get_benefits&ticket_id=... – tier benefits for a ticket.
+ * Optional ?stall_category=...; defaults to logged-in stall session category.
+ * Admin/distributor sessions without a category see all tier benefits.
+ */
+function handleGetBenefits(PDO $db): void
+{
+    if (!isStallAuthenticated() && !isDistributorAuthenticated()) {
+        http_response_code(401);
+        echo json_encode(['status' => 'error', 'message' => 'Staff login required.']);
+        return;
+    }
+
+    $ticketId = trim($_GET['ticket_id'] ?? $_GET['id'] ?? '');
+    if ($ticketId === '') {
+        http_response_code(400);
+        echo json_encode(['status' => 'error', 'message' => 'ticket_id is required.']);
+        return;
+    }
+
+    try {
+        $stallCategory = resolveStallCategoryFilter();
+    } catch (InvalidArgumentException $e) {
+        http_response_code(400);
+        echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        return;
+    }
+
+    $payload = getBenefitsForTicket($db, $ticketId, $stallCategory);
+    if ($payload === null) {
+        http_response_code(404);
+        echo json_encode(['status' => 'error', 'message' => 'Ticket not found.']);
+        return;
+    }
+
+    echo json_encode(['status' => 'success', 'data' => $payload]);
+}
+
+/**
  * GET /api/ticket/{id} – ticket details (requires authenticated session).
  */
 function handleGetTicket(PDO $db): void
 {
     if (
-        empty($_SESSION['distributor_authenticated'])
-        || $_SESSION['distributor_authenticated'] !== true
+        !isStallAuthenticated()
+        && (empty($_SESSION['distributor_authenticated']) || $_SESSION['distributor_authenticated'] !== true)
     ) {
         http_response_code(401);
         echo json_encode(['status' => 'error', 'message' => 'Authentication required.']);

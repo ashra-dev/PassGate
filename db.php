@@ -6,6 +6,8 @@ require_once __DIR__ . '/config.php';
 
 /**
  * Return a shared PDO connection to PostgreSQL.
+ *
+ * After schema changes, run: php upgrade_schema.php
  */
 function getDb(): PDO
 {

@@ -12,8 +12,10 @@ if (
     || $_SESSION['distributor_authenticated'] !== true
     || ($_SESSION['distributor_role'] ?? '') !== 'admin'
 ) {
-    header('Location: terminal.php');
-    exit;
+    if (isDistributorAuthenticated() && ($_SESSION['distributor_role'] ?? '') !== 'admin') {
+        safeRedirect('distributor_dashboard.php');
+    }
+    safeRedirect('distributor_login.php');
 }
 
 $db = getDb();
@@ -35,16 +37,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $userIp = $_SERVER['REMOTE_ADDR'] ?? 'UNKNOWN';
 
     if (isset($_POST['global_action']) && $_POST['global_action'] === 'add_distributor') {
-        $dId = 'DIST-' . random_int(1000, 9999);
         $dName = trim($_POST['d_name'] ?? '');
         $dEmail = strtolower(trim($_POST['d_email'] ?? ''));
         $dRole = trim($_POST['d_role'] ?? 'distributor') ?: 'distributor';
+        $dPassword = (string) ($_POST['d_password'] ?? '');
+        $dPasswordConfirm = (string) ($_POST['d_password_confirm'] ?? '');
 
-        $stmt = $db->prepare(
-            'INSERT INTO distributors (id, name, email, role) VALUES (:id, :name, :email, :role)'
-        );
-        $stmt->execute(['id' => $dId, 'name' => $dName, 'email' => $dEmail, 'role' => $dRole]);
-        auditLog('CRM', "Added distributor {$dName} ({$dId})");
+        if ($dPassword !== $dPasswordConfirm) {
+            $_SESSION['distributor_flash_error'] = 'Passwords do not match.';
+        } else {
+            try {
+                ensureDistributorsSchema($db);
+                $newId = createDistributor($db, $dName, $dEmail, $dPassword, $dRole);
+                auditLog('CRM', "Added distributor {$dName} ({$newId})");
+            } catch (Throwable $e) {
+                $_SESSION['distributor_flash_error'] = $e->getMessage();
+            }
+        }
+        safeRedirect('distributors.php?' . $eventQuery('distributors'));
+    }
+
+    if (isset($_POST['global_action']) && $_POST['global_action'] === 'reset_distributor_password') {
+        $targetId = trim($_POST['d_id'] ?? '');
+        $newPassword = (string) ($_POST['new_password'] ?? '');
+        $confirmPassword = (string) ($_POST['new_password_confirm'] ?? '');
+
+        if ($newPassword !== $confirmPassword) {
+            $_SESSION['distributor_flash_error'] = 'Passwords do not match.';
+        } else {
+            try {
+                resetDistributorPassword($db, $targetId, $newPassword);
+                auditLog('CRM', "Reset password for distributor {$targetId}");
+            } catch (Throwable $e) {
+                $_SESSION['distributor_flash_error'] = $e->getMessage();
+            }
+        }
         safeRedirect('distributors.php?' . $eventQuery('distributors'));
     }
 
@@ -157,12 +184,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sEmail = strtolower(trim($_POST['s_email'] ?? ''));
         $sPassword = (string) ($_POST['s_password'] ?? '');
         $sPasswordConfirm = (string) ($_POST['s_password_confirm'] ?? '');
+        $sCategory = resolveCategorySelection(
+            trim($_POST['s_category'] ?? ''),
+            trim($_POST['s_category_custom'] ?? '')
+        );
 
         if ($sPassword !== $sPasswordConfirm) {
             $_SESSION['stall_flash_error'] = 'Passwords do not match.';
         } else {
             try {
-                $newId = createStall($db, $sName, $sEmail, $sPassword);
+                $newId = createStall($db, $sName, $sEmail, $sPassword, $sCategory);
                 auditLog('CRM', "Added stall {$sName} (id {$newId})");
             } catch (Throwable $e) {
                 $_SESSION['stall_flash_error'] = $e->getMessage();
@@ -240,9 +271,13 @@ $recentScansStmt->execute(['event_id' => $eventId]);
 $recentScans = $recentScansStmt->fetchAll();
 
 $stalls = getAllStalls($db);
+$benefitCategories = getBenefitCategoryOptions($db);
+$scansByCategory = getScansByCategory($db, $eventId);
 $customers = getAllCustomersWithStats($db);
 $stallFlashError = $_SESSION['stall_flash_error'] ?? '';
 unset($_SESSION['stall_flash_error']);
+$distributorFlashError = $_SESSION['distributor_flash_error'] ?? '';
+unset($_SESSION['distributor_flash_error']);
 
 $stationChartStmt = $db->prepare(
     'SELECT s.station_type, COUNT(*) AS cnt
@@ -618,14 +653,21 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
             <p>Companies that receive ticket ranges from the Vault Pool.</p>
         </div>
     </div>
+    <?php if ($distributorFlashError !== ''): ?>
+        <div class="pg-alert" style="margin-bottom:1rem;">
+            <?php echo htmlspecialchars($distributorFlashError); ?>
+        </div>
+    <?php endif; ?>
     <div class="pg-form-panel">
         <h4>Add Distributor</h4>
-        <p class="pg-form-hint">They log in with the same magic-link flow as admin, using this email.</p>
+        <p class="pg-form-hint">Set a login password — distributors sign in at <code class="pg-mono">distributor_login.php</code>.</p>
         <form method="POST" class="pg-form-grid">
             <input type="hidden" name="global_action" value="add_distributor">
             <div class="pg-field"><label>Company</label><input type="text" name="d_name" required placeholder="Acme Tickets"></div>
             <div class="pg-field"><label>Email</label><input type="email" name="d_email" required placeholder="ops@company.com"></div>
             <div class="pg-field"><label>Role</label><select name="d_role"><option value="distributor">Distributor</option><option value="admin">Admin</option></select></div>
+            <div class="pg-field"><label>Password</label><input type="password" name="d_password" required minlength="6"></div>
+            <div class="pg-field"><label>Confirm Password</label><input type="password" name="d_password_confirm" required minlength="6"></div>
             <button type="submit" class="btn btn-success">Save</button>
         </form>
     </div>
@@ -637,7 +679,7 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
         </div>
     <?php else: ?>
         <table>
-            <thead><tr><th>ID</th><th>Company</th><th>Email</th><th>Role</th><th></th></tr></thead>
+            <thead><tr><th>ID</th><th>Company</th><th>Email</th><th>Role</th><th>Actions</th></tr></thead>
             <tbody>
                 <?php foreach ($distributors as $d): ?>
                     <tr>
@@ -645,8 +687,12 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
                         <td><strong><?php echo htmlspecialchars($d['name']); ?></strong></td>
                         <td><?php echo htmlspecialchars($d['email']); ?></td>
                         <td><span class="badge-count"><?php echo htmlspecialchars($d['role']); ?></span></td>
-                        <td>
-                            <form method="POST" onsubmit="return confirm('Delete this distributor?');">
+                        <td style="white-space:nowrap;">
+                            <button type="button" class="btn btn-primary" style="padding:4px 8px;font-size:11px;"
+                                    onclick="openResetDistributorModal(<?php echo json_encode($d['id']); ?>, <?php echo json_encode($d['name']); ?>)">
+                                Reset Password
+                            </button>
+                            <form method="POST" style="display:inline;" onsubmit="return confirm('Delete this distributor?');">
                                 <input type="hidden" name="global_action" value="delete_distributor">
                                 <input type="hidden" name="d_id" value="<?php echo htmlspecialchars($d['id']); ?>">
                                 <button type="submit" class="btn btn-danger" style="padding:4px 8px;font-size:11px;">Delete</button>
@@ -657,6 +703,38 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
             </tbody>
         </table>
     <?php endif; ?>
+
+    <div id="reset-distributor-modal" class="pg-modal-scrim" role="dialog" aria-modal="true">
+        <div class="pg-modal-card">
+            <h3 id="reset-distributor-title">Reset Password</h3>
+            <form method="POST" style="margin-top:1rem;">
+                <input type="hidden" name="global_action" value="reset_distributor_password">
+                <input type="hidden" name="d_id" id="reset-distributor-id" value="">
+                <div class="pg-field" style="margin-bottom:0.75rem;">
+                    <label style="display:block;margin-bottom:0.35rem;font-size:0.7rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;">New Password</label>
+                    <input type="password" name="new_password" required minlength="6" style="width:100%;box-sizing:border-box;">
+                </div>
+                <div class="pg-field" style="margin-bottom:0.75rem;">
+                    <label style="display:block;margin-bottom:0.35rem;font-size:0.7rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;">Confirm Password</label>
+                    <input type="password" name="new_password_confirm" required minlength="6" style="width:100%;box-sizing:border-box;">
+                </div>
+                <div style="display:flex;gap:0.6rem;margin-top:1rem;">
+                    <button type="submit" class="btn btn-success">Update Password</button>
+                    <button type="button" class="btn btn-ghost" onclick="closeResetDistributorModal()">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <script>
+        function openResetDistributorModal(id, name) {
+            document.getElementById('reset-distributor-id').value = id;
+            document.getElementById('reset-distributor-title').innerText = 'Reset Password — ' + name;
+            document.getElementById('reset-distributor-modal').classList.add('is-open');
+        }
+        function closeResetDistributorModal() {
+            document.getElementById('reset-distributor-modal').classList.remove('is-open');
+        }
+    </script>
 
 <?php elseif ($active_tab === 'stalls'): ?>
     <div class="pg-section-head">
@@ -673,16 +751,54 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
 
     <div class="pg-form-panel">
         <h4>Add New Stall</h4>
-        <p class="pg-form-hint">Example: benefit <strong>Lunch</strong> → stall named <strong>Lunch</strong>. Multiple stalls can share one email if each has a different password.</p>
-        <form method="POST" class="pg-form-grid">
+        <p class="pg-form-hint">Pick a category that matches the benefits this stall serves. Categories come from event benefits; you can add a new one if needed.</p>
+        <form method="POST" class="pg-form-grid" id="add-stall-form">
             <input type="hidden" name="global_action" value="add_stall">
-            <div class="pg-field"><label>Stall Name</label><input type="text" name="s_name" required placeholder="Lunch"></div>
+            <div class="pg-field"><label>Stall Name</label><input type="text" name="s_name" required placeholder="Bar Station"></div>
+            <div class="pg-field pg-category-picker">
+                <label for="s_category">Category</label>
+                <select name="s_category" id="s_category" class="pg-category-custom-select" required>
+                    <option value="">Select category…</option>
+                    <?php foreach ($benefitCategories as $cat): ?>
+                        <option value="<?php echo htmlspecialchars($cat); ?>"><?php echo htmlspecialchars(ucfirst($cat)); ?></option>
+                    <?php endforeach; ?>
+                    <option value="__new__">+ Add new category…</option>
+                </select>
+                <div class="pg-category-picker__custom" id="s_category_custom_wrap" data-custom-wrap>
+                    <label for="s_category_custom" class="pg-category-picker__label" style="margin-top:0.25rem;">New category name</label>
+                    <input type="text" name="s_category_custom" id="s_category_custom" class="pg-category-custom"
+                           maxlength="50" placeholder="e.g. drink, food, merch" disabled>
+                </div>
+            </div>
             <div class="pg-field"><label>Email</label><input type="email" name="s_email" required placeholder="stall@event.com"></div>
             <div class="pg-field"><label>Password</label><input type="password" name="s_password" required minlength="6"></div>
             <div class="pg-field"><label>Confirm Password</label><input type="password" name="s_password_confirm" required minlength="6"></div>
             <button type="submit" class="btn btn-success">Add Stall</button>
         </form>
     </div>
+
+    <script src="assets/js/category-picker.js"></script>
+    <script>
+    (function () {
+      const INITIAL_CATEGORIES = <?php echo json_encode($benefitCategories, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+      PGCategories.init(INITIAL_CATEGORIES);
+
+      const stallForm = document.getElementById('add-stall-form');
+      const stallSelect = document.getElementById('s_category');
+      if (stallSelect) {
+        PGCategories.rebuildSelect(stallSelect, stallSelect.value || '');
+      }
+
+      PGCategories.bindForm(stallForm, '#s_category');
+
+      stallForm?.addEventListener('submit', (e) => {
+        if (!PGCategories.commitPending('#s_category')) {
+          e.preventDefault();
+          alert('Enter a name for the new category.');
+        }
+      });
+    })();
+    </script>
 
     <?php if ($stalls === []): ?>
         <div class="pg-empty">
@@ -692,12 +808,13 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
         </div>
     <?php else: ?>
         <table>
-            <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Created At</th><th>Actions</th></tr></thead>
+            <thead><tr><th>ID</th><th>Name</th><th>Category</th><th>Email</th><th>Created At</th><th>Actions</th></tr></thead>
             <tbody>
                 <?php foreach ($stalls as $stall): ?>
                     <tr>
                         <td><?php echo (int) $stall['id']; ?></td>
                         <td><strong><?php echo htmlspecialchars($stall['name']); ?></strong></td>
+                        <td><?php echo htmlspecialchars($stall['category'] !== '' ? ucfirst((string) $stall['category']) : '—'); ?></td>
                         <td><?php echo htmlspecialchars($stall['email']); ?></td>
                         <td><?php echo htmlspecialchars($stall['created_at']); ?></td>
                         <td style="white-space:nowrap;">
@@ -857,6 +974,22 @@ $gatewaySales = getOnlineSalesByGateway($db, $eventId);
                         <td><strong><?php echo htmlspecialchars(ucfirst($gw['payment_gateway'])); ?></strong></td>
                         <td><?php echo (int) $gw['sale_count']; ?></td>
                         <td><?php echo formatPrice($gw['revenue']); ?></td>
+                    </tr>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </tbody>
+    </table>
+    <h3 style="margin-top:1.5rem;">Scans by Benefit Category</h3>
+    <table style="margin-bottom:1.25rem;">
+        <thead><tr><th>Category</th><th>Scans</th></tr></thead>
+        <tbody>
+            <?php if ($scansByCategory === []): ?>
+                <tr><td colspan="2">No scans recorded yet.</td></tr>
+            <?php else: ?>
+                <?php foreach ($scansByCategory as $catRow): ?>
+                    <tr>
+                        <td><strong><?php echo htmlspecialchars(ucfirst($catRow['category'])); ?></strong></td>
+                        <td><?php echo (int) $catRow['scan_count']; ?></td>
                     </tr>
                 <?php endforeach; ?>
             <?php endif; ?>

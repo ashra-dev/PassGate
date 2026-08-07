@@ -27,10 +27,10 @@ if ($sessionId === '') {
                 $db = getDb();
                 $result = fulfillStripeCheckoutSession($db, $checkoutSession);
 
-                if (!$result['success'] || $result['ticket_id'] === null) {
+                if (!$result['success'] || ($result['ticket_ids'] ?? []) === []) {
                     $error = $result['message'] ?? 'Could not assign ticket.';
                 } else {
-                    $ticketId = $result['ticket_id'];
+                    $ticketIds = $result['ticket_ids'];
                     $eventName = $result['event_name'] ?? '';
                     $tierName = $result['tier_name'] ?? '';
                     $customerEmail = $result['email'] ?? '';
@@ -40,11 +40,17 @@ if ($sessionId === '') {
                         establishCustomerSession($customer);
                     }
 
-                    if ($eventName !== '') {
-                        sendTicketPurchaseEmail($customerEmail, $ticketId, $eventName, $tierName);
+                    if ($eventName !== '' && shouldSendPurchaseEmail((string) ($result['message'] ?? ''))) {
+                        sendTicketPurchaseEmail($customerEmail, $ticketIds, $eventName, $tierName);
                     }
 
-                    safeRedirect('customer_dashboard.php?new=1&ticket=' . urlencode($ticketId));
+                    $count = count($ticketIds);
+                    $firstTicket = $ticketIds[0] ?? '';
+                    safeRedirect(
+                        'customer_dashboard.php?new=1'
+                        . ($firstTicket !== '' ? '&ticket=' . urlencode($firstTicket) : '')
+                        . ($count > 1 ? '&count=' . $count : '')
+                    );
                 }
             }
         } catch (Throwable $e) {
@@ -60,14 +66,22 @@ if ($sessionId === '') {
     <?php passgateRenderHead('PassGate – Purchase'); ?>
 </head>
 <body class="pg-body">
+    <?php passgateRenderPublicNav('buy'); ?>
+    <?php passgateRenderBreadcrumb([
+        ['label' => 'Home', 'href' => 'index.php'],
+        ['label' => 'Buy tickets', 'href' => 'buy.php'],
+        ['label' => 'Payment'],
+    ]); ?>
     <div class="pg-auth-stage">
         <div class="pg-card pg-card--auth" style="text-align:center;">
             <div class="pg-notice pg-notice--error"><?php echo htmlspecialchars($error); ?></div>
             <div style="margin-top:1rem;display:grid;gap:0.55rem;">
-                <a class="pg-btn pg-btn--gold" href="buy.php">Back to events</a>
-                <a class="pg-btn pg-btn--ghost" href="customer_login.php">Customer login</a>
+                <a class="pg-btn pg-btn--gold" href="buy.php">Back to buy tickets</a>
+                <a class="pg-btn pg-btn--ghost" href="customer_dashboard.php">My tickets</a>
+                <a class="pg-btn pg-btn--ghost" href="customer_login.php?next=customer_dashboard.php">Customer login</a>
             </div>
         </div>
     </div>
+    <?php passgateRenderPublicFooter(); ?>
 </body>
 </html>

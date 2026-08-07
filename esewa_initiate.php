@@ -24,6 +24,15 @@ $input = json_decode(file_get_contents('php://input') ?: '', true) ?? [];
 $eventId = (int) ($input['event_id'] ?? 0);
 $tierId = (int) ($input['tier_id'] ?? 0);
 $email = strtolower(trim($input['email'] ?? ''));
+$quantityRaw = $input['quantity'] ?? 1;
+
+if (!isCustomerAuthenticated()) {
+    http_response_code(401);
+    echo json_encode(['status' => 'error', 'message' => 'Please log in before buying.']);
+    exit;
+}
+
+$email = strtolower(trim((string) ($_SESSION['customer_email'] ?? '')));
 
 if (!isCustomerAuthenticated()) {
     http_response_code(401);
@@ -69,13 +78,22 @@ try {
         exit;
     }
 
+    try {
+        $quantity = parsePurchaseQuantity($quantityRaw, $available);
+    } catch (InvalidArgumentException $e) {
+        http_response_code(400);
+        echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        exit;
+    }
+
     $payload = buildEsewaPaymentForm(
         $eventId,
         $tierId,
         $email,
         (float) $tier['price'],
         (string) $tier['event_name'],
-        (string) $tier['name']
+        (string) $tier['name'],
+        $quantity
     );
 
     echo json_encode(['status' => 'success', 'esewa_payload' => $payload]);

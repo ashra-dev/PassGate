@@ -7,7 +7,7 @@ session_start();
 require_once __DIR__ . '/includes/functions.php';
 require_once __DIR__ . '/includes/ui.php';
 
-$isCustomer = isCustomerAuthenticated();
+$isCustomer = passgateHasVerifiedCustomer();
 $events = [];
 
 try {
@@ -24,6 +24,10 @@ try {
 </head>
 <body class="pg-body">
     <?php passgateRenderPublicNav('events'); ?>
+    <?php passgateRenderBreadcrumb([
+        ['label' => 'Home', 'href' => 'index.php'],
+        ['label' => 'Events'],
+    ]); ?>
 
     <div class="pg-shop-wrap">
         <div class="pg-shop-top">
@@ -79,10 +83,18 @@ try {
                                 <?php endif; ?>
                             </div>
                         <?php endforeach; ?>
+                        <div style="margin-top:0.85rem;">
+                            <?php if ($isCustomer): ?>
+                                <a class="pg-btn pg-btn--gold pg-btn--sm" href="buy.php">Buy tickets for this event</a>
+                            <?php else: ?>
+                                <a class="pg-btn pg-btn--gold pg-btn--sm" href="customer_login.php?next=buy.php">Log in to buy</a>
+                            <?php endif; ?>
+                        </div>
                     </div>
                 </section>
             <?php endforeach; ?>
         <?php endif; ?>
     </div>
+    <?php passgateRenderPublicFooter(); ?>
 </body>
 </html>

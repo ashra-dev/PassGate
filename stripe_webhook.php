@@ -65,10 +65,10 @@ if ($eventId <= 0 || $tierId <= 0 || $email === '') {
 $db = getDb();
 $result = fulfillStripeCheckoutSession($db, $session);
 
-if ($result['success'] && $result['ticket_id'] !== null && ($result['message'] ?? '') === 'Ticket assigned.') {
+if ($result['success'] && !empty($result['ticket_ids']) && shouldSendPurchaseEmail((string) ($result['message'] ?? ''))) {
     sendTicketPurchaseEmail(
         $result['email'],
-        $result['ticket_id'],
+        $result['ticket_ids'],
         (string) ($result['event_name'] ?? 'Event'),
         (string) ($result['tier_name'] ?? '')
     );
